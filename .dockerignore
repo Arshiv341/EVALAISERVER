@@ -1,0 +1,9 @@
+node_modules
+uploads
+results
+temp
+.env
+config/google-vision.json
+*.log
+.git
+.gitignore

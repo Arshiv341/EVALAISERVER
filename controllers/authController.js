@@ -13,6 +13,18 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function getCookieOptions(maxAgeDays) {
+  const isProd = process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    path: '/',
+    maxAge: maxAgeDays * 24 * 60 * 60 * 1000
+  };
+}
+
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -34,13 +46,7 @@ function issueToken(res, faculty, rememberMe = false) {
     { expiresIn: rememberMe ? '30d' : '7d' }
   );
 
-  res.cookie('token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: (rememberMe ? 30 : 7) * 24 * 60 * 60 * 1000
-  });
+  res.cookie('token', token, getCookieOptions(rememberMe ? 30 : 7));
 
   return token;
 }
@@ -285,12 +291,7 @@ exports.login = async (req, res) => {
 };
 
 exports.logout = (_req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/'
-  });
+  res.clearCookie('token', getCookieOptions(1));
   res.json({ success: true });
 };
 

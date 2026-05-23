@@ -19,6 +19,8 @@ const PORT = process.env.PORT || 3001;
 const mongoUri = process.env.MONGO_URI;
 const isProd = process.env.NODE_ENV === 'production';
 
+app.set('trust proxy', 1);
+
 const maskedEmailUser = process.env.EMAIL_USER
   ? `${String(process.env.EMAIL_USER).slice(0, 2)}***`
   : '(missing)';
@@ -118,18 +120,26 @@ app.get('/api/health', (_req, res) => {
 });
 
 const clientDir = path.join(__dirname, '../client/dist');
-app.use(express.static(clientDir));
+const hasClientBuild = fs.existsSync(clientDir) && fs.existsSync(path.join(clientDir, 'index.html'));
 
-app.get('/login', (_req, res) => res.sendFile(path.join(clientDir, 'login.html')));
-app.get('/register', (_req, res) => res.sendFile(path.join(clientDir, 'register.html')));
-app.get('/', (_req, res) => res.sendFile(path.join(clientDir, 'index.html')));
+if (hasClientBuild) {
+  app.use(express.static(clientDir));
+
+  app.get('/login', (_req, res) => res.sendFile(path.join(clientDir, 'login.html')));
+  app.get('/register', (_req, res) => res.sendFile(path.join(clientDir, 'register.html')));
+  app.get('/', (_req, res) => res.sendFile(path.join(clientDir, 'index.html')));
+}
 
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'Route not found.' });
   }
 
-  return res.sendFile(path.join(clientDir, 'index.html'));
+  if (hasClientBuild) {
+    return res.sendFile(path.join(clientDir, 'index.html'));
+  }
+
+  return res.status(404).json({ error: 'Route not found.' });
 });
 
 app.use((err, _req, res, _next) => {
@@ -174,9 +184,12 @@ if (!mongoUri) {
     .catch(err => console.error('MongoDB error:', err.message));
 }
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
   if (!isProd) {
     console.log('[debug] Email test route enabled: POST /api/auth/test-email');
   }
+}).on('error', err => {
+  console.error('Server failed to start:', err);
+  process.exit(1);
 });

@@ -13,22 +13,16 @@ const PLANS = [
 
 // Helper to get razorpay instance
 function getRazorpayInstance() {
-  console.log("Razorpay Key:", process.env.RAZORPAY_KEY_ID);
-  console.log("Secret Exists:", !!process.env.RAZORPAY_KEY_SECRET);
-
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   if (!keyId || !keySecret) {
     throw new Error('Razorpay API keys are not configured in environment variables.');
   }
 
-  console.log("Initializing Razorpay instance...");
-  const instance = new Razorpay({
+  return new Razorpay({
     key_id: keyId,
     key_secret: keySecret
   });
-  console.log("Razorpay instance initialized successfully.");
-  return instance;
 }
 
 exports.getPlans = (req, res) => {
@@ -38,8 +32,6 @@ exports.getPlans = (req, res) => {
 exports.createOrder = async (req, res) => {
   try {
     const { planId } = req.body;
-    console.log("Faculty ID:", req.faculty?.id);
-    console.log("Plan ID:", planId);
 
     // Authentication protection before using req.faculty.id
     if (!req.faculty || !req.faculty.id) {
@@ -50,12 +42,10 @@ exports.createOrder = async (req, res) => {
     }
 
     const plan = PLANS.find(p => p.id === planId);
-    console.log("Selected Plan:", plan);
     if (!plan) {
       return res.status(400).json({ error: 'Invalid plan selected.' });
     }
 
-    console.log("Calling getRazorpayInstance()...");
     const rzp = getRazorpayInstance();
 
     const options = {
@@ -68,11 +58,8 @@ exports.createOrder = async (req, res) => {
       }
     };
 
-    console.log("Creating Razorpay order with options:", options);
     const order = await rzp.orders.create(options);
-    console.log("Razorpay Order response:", order);
 
-    console.log("Creating pending TokenTransaction in DB...");
     const transaction = await TokenTransaction.create({
       facultyId: req.faculty.id,
       type: 'credit',
@@ -82,15 +69,11 @@ exports.createOrder = async (req, res) => {
       orderId: order.id,
       credited: false
     });
-    console.log("TokenTransaction created in DB:", transaction._id);
 
-    console.log("Updating Faculty transactionHistory in DB...");
     await Faculty.findByIdAndUpdate(req.faculty.id, {
       $push: { transactionHistory: transaction._id }
     });
-    console.log("Faculty record updated successfully.");
 
-    console.log("Sending order creation success response...");
     res.status(201).json({
       success: true,
       orderId: order.id,
@@ -99,7 +82,6 @@ exports.createOrder = async (req, res) => {
       keyId: process.env.RAZORPAY_KEY_ID,
       plan
     });
-    console.log("Response sent successfully.");
   } catch (err) {
     console.error("FULL ERROR IN createOrder:", err);
 
