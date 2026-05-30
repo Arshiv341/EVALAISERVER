@@ -16,7 +16,7 @@ const checkPremiumForBulk = async (req, res, next) => {
       }
 
       const hasSuccessfulCredit = faculty.transactionHistory && faculty.transactionHistory.some(t => t.type === 'credit' && t.status === 'success');
-      const isPremiumUser = (faculty.availableTokens > 20) || hasSuccessfulCredit;
+      const isPremiumUser = faculty.institutionalAccess || (faculty.availableTokens > 20) || hasSuccessfulCredit;
 
       if (!isPremiumUser) {
         return res.status(403).json({

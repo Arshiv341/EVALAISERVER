@@ -25,4 +25,8 @@ router.get('/download/:jobId', ctrl.download);
 // List all jobs for the logged-in faculty
 router.get('/jobs',         ctrl.getJobs);
 
+// Class Performance Analytics
+router.get('/analytics', ctrl.getAnalytics);
+router.post('/analytics/refresh', ctrl.refreshAnalytics);
+
 module.exports = router;

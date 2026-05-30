@@ -37,6 +37,7 @@ const evaluationJobSchema = new mongoose.Schema({
     enum:    ['hard', 'avg', 'low'],
     default: 'avg'
   },
+  customInstructions: { type: String, default: '' },
   students:    [studentSchema],
   excelPath:   { type: String, default: '' },
   status: {

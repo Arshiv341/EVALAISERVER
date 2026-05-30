@@ -134,6 +134,15 @@ async function finalizeJob(jobId) {
   });
 
   const finalJob = await EvalJob.findById(jobId);
+
+  // Trigger background class performance analytics updates safely without blocking
+  try {
+    const { enqueueAnalytics } = require('./analyticsService');
+    enqueueAnalytics(finalJob.facultyId);
+  } catch (analyticsError) {
+    console.error('[Analytics Queue Trigger Error] Failed to enqueue analytics update:', analyticsError);
+  }
+
   try {
     await cleanupJobFiles(finalJob);
   } catch (err) {

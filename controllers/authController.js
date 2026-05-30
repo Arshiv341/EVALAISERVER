@@ -39,6 +39,67 @@ async function clearOtpRecord(email) {
   }
 }
 
+async function checkAndApplyInstitutionalBenefits(faculty) {
+  if (!faculty || !faculty.email) return;
+
+  const email = faculty.email.toLowerCase();
+  if (email.endsWith('@abes.ac.in')) {
+    let needsSave = false;
+
+    if (!faculty.institutionalAccess) {
+      faculty.institutionalAccess = true;
+      faculty.institutionName = 'ABES Institute';
+      faculty.institutionPlan = 'Premium Plan';
+      needsSave = true;
+    }
+
+    const now = new Date();
+    const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    // If never renewed or renewal is due (older than 30 days)
+    if (!faculty.lastInstitutionalRenewal || faculty.lastInstitutionalRenewal <= oneMonthAgo) {
+      // Refill to 1500 tokens if current balance is less than 1500
+      if (faculty.availableTokens < 1500) {
+        const refillAmount = 1500 - faculty.availableTokens;
+        faculty.availableTokens = 1500;
+
+        // Create transaction history log
+        const transaction = await TokenTransaction.create({
+          facultyId: faculty._id,
+          type: 'credit',
+          amount: refillAmount,
+          description: `ABES Institutional Monthly Refill: Premium Plan (Refilled to 1500 Tokens)`,
+          status: 'success',
+          credited: true,
+          createdAt: now
+        });
+
+        faculty.transactionHistory.push(transaction._id);
+      } else {
+        // Log monthly renewal verification with 0 added tokens
+        const transaction = await TokenTransaction.create({
+          facultyId: faculty._id,
+          type: 'credit',
+          amount: 0,
+          description: `ABES Institutional Monthly Renewal: Premium Plan (Balance already above 1500 Tokens)`,
+          status: 'success',
+          credited: true,
+          createdAt: now
+        });
+
+        faculty.transactionHistory.push(transaction._id);
+      }
+
+      faculty.lastInstitutionalRenewal = now;
+      needsSave = true;
+    }
+
+    if (needsSave) {
+      await faculty.save();
+    }
+  }
+}
+
 function issueToken(res, faculty, rememberMe = false) {
   const token = jwt.sign(
     { id: faculty._id, email: faculty.email, employeeId: faculty.employeeId },
@@ -232,6 +293,7 @@ exports.register = async (req, res) => {
     });
 
     await clearOtpRecord(email);
+    await checkAndApplyInstitutionalBenefits(faculty);
     issueToken(res, faculty);
 
     res.status(201).json({
@@ -262,7 +324,7 @@ exports.login = async (req, res) => {
       return res.status(400).json({ error: 'Email, Employee ID, and password are required.' });
     }
 
-    const faculty = await Faculty.findOne({ email, employeeId }).select('+passwordHash');
+    const faculty = await Faculty.findOne({ email, employeeId }).select('+passwordHash').populate('transactionHistory');
     if (!faculty) {
       return res.status(401).json({ error: 'Invalid credentials.' });
     }
@@ -271,6 +333,8 @@ exports.login = async (req, res) => {
     if (!match) {
       return res.status(401).json({ error: 'Invalid credentials.' });
     }
+
+    await checkAndApplyInstitutionalBenefits(faculty);
 
     issueToken(res, faculty, rememberMe);
 
@@ -304,6 +368,7 @@ exports.me = async (req, res) => {
     if (!faculty) {
       return res.status(404).json({ error: 'Faculty not found.' });
     }
+    await checkAndApplyInstitutionalBenefits(faculty);
     res.json({ faculty });
   } catch (err) {
     console.error('me fetch error:', err);

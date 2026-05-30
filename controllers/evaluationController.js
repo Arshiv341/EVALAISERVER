@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const multer = require('multer');
 const EvalJob = require('../models/EvaluationJob');
 const Faculty = require('../models/Faculty');
@@ -46,6 +47,16 @@ const uploadFields = upload.fields([
 ]);
 
 exports.uploadMiddleware = uploadFields;
+
+function getFileHash(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', data => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', err => reject(err));
+  });
+}
 
 function cleanupFiles(filePaths = []) {
   for (const filePath of filePaths) {
@@ -193,39 +204,113 @@ exports.upload = async (req, res) => {
       return res.status(400).json({ error: 'At least one answer sheet PDF is required.' });
     }
 
-    // 1. Enforce Token Verification BEFORE uploading/processing
+    // 1. Duplicate detection (filename & SHA-256 content hash)
+    const uniqueFiles = [];
+    const skippedFiles = [];
+    const seenNames = new Set();
+    const seenHashes = new Set();
+
+    for (const file of asFiles) {
+      const normalizedName = String(file.originalname || '').trim().toLowerCase();
+      
+      let fileHash = '';
+      try {
+        fileHash = await getFileHash(file.path);
+      } catch (hashError) {
+        console.error(`[HASH ERROR] Failed to calculate hash for ${file.originalname}:`, hashError);
+      }
+
+      const isDuplicateName = seenNames.has(normalizedName);
+      const isDuplicateHash = fileHash ? seenHashes.has(fileHash) : false;
+
+      if (isDuplicateName || isDuplicateHash) {
+        console.log(`[DUPLICATE DETECTED] ${file.originalname}`);
+        console.log(`[DUPLICATE REMOVED FROM QUEUE] ${file.originalname}`);
+        skippedFiles.push(file.originalname);
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkError) {
+          console.warn(`[CLEANUP WARNING] Failed to delete duplicate file ${file.path}:`, unlinkError);
+        }
+      } else {
+        seenNames.add(normalizedName);
+        if (fileHash) {
+          seenHashes.add(fileHash);
+        }
+        uniqueFiles.push(file);
+      }
+    }
+
+    if (uniqueFiles.length === 0) {
+      try {
+        fs.unlinkSync(qpFiles[0].path);
+      } catch {}
+      return res.status(400).json({
+        error: 'All uploaded answer sheets were duplicates and have been skipped.',
+        processedCount: 0,
+        skippedCount: skippedFiles.length,
+        skippedFiles
+      });
+    }
+
+    // 2. Enforce Token Verification BEFORE uploading/processing
     const faculty = await Faculty.findById(req.faculty.id).populate('transactionHistory');
     if (!faculty) {
+      cleanupFiles([qpFiles[0].path, ...uniqueFiles.map(f => f.path)]);
       return res.status(404).json({ error: 'Faculty profile not found.' });
     }
 
     const hasSuccessfulCredit = faculty.transactionHistory && faculty.transactionHistory.some(t => t.type === 'credit' && t.status === 'success');
     const isPremiumUser = (faculty.availableTokens > 20) || hasSuccessfulCredit;
 
-    if (asFiles.length > 1 && !isPremiumUser) {
+    if (uniqueFiles.length > 1 && !isPremiumUser) {
+      cleanupFiles([qpFiles[0].path, ...uniqueFiles.map(f => f.path)]);
       return res.status(403).json({
         success: false,
         error: "Bulk evaluation available only for premium users"
       });
     }
 
-    const requiredTokens = asFiles.length * 2;
+    const requiredTokens = uniqueFiles.length * 2;
     const available = typeof faculty.availableTokens === 'number' ? faculty.availableTokens : 20;
 
     if (available < requiredTokens) {
+      cleanupFiles([qpFiles[0].path, ...uniqueFiles.map(f => f.path)]);
       return res.status(403).json({
-        error: `Insufficient tokens. Evaluating ${asFiles.length} answer sheets requires ${requiredTokens} tokens, but you only have ${available} available. Please recharge.`
+        error: `Insufficient tokens. Evaluating ${uniqueFiles.length} answer sheets requires ${requiredTokens} tokens, but you only have ${available} available. Please recharge.`
       });
     }
 
     const mode = String(req.body?.mode || 'avg').toLowerCase();
     if (!['hard', 'avg', 'low'].includes(mode)) {
+      cleanupFiles([qpFiles[0].path, ...uniqueFiles.map(f => f.path)]);
       return res.status(400).json({ error: 'Invalid evaluation mode.' });
     }
 
     const qpPath = qpFiles[0].path;
-    const answerPaths = asFiles.map(file => file.path);
-    uploadedPaths.push(qpPath, ...answerPaths);
+    uploadedPaths.push(qpPath, ...uniqueFiles.map(file => file.path));
+
+    const customInstructions = req.body?.customInstructions !== undefined
+      ? String(req.body.customInstructions).trim()
+      : '';
+
+    console.log('[TRACE 2] upload endpoint body:', req.body);
+    console.log('[TRACE 3] isPremiumUser status in upload endpoint:', isPremiumUser);
+    console.log('[TRACE 4] customInstructions extracted:', customInstructions);
+
+    if (customInstructions.length > 0) {
+      if (!isPremiumUser) {
+        cleanupFiles(uploadedPaths);
+        return res.status(403).json({ error: 'Custom Instructions are available only for Premium users.' });
+      }
+      if (customInstructions.length > 2000) {
+        cleanupFiles(uploadedPaths);
+        return res.status(400).json({ error: 'Custom instructions cannot exceed 2000 characters.' });
+      }
+    }
+
+    const storedInstructions = isPremiumUser ? customInstructions : '';
+    console.log('[TRACE 5] customInstructions saved in DB (storedInstructions):', storedInstructions);
 
     let qpOcr;
     try {
@@ -254,7 +339,7 @@ exports.upload = async (req, res) => {
       });
     }
 
-    const students = asFiles.map(file => ({
+    const students = uniqueFiles.map(file => ({
       originalName: file.originalname,
       filePath: file.path,
       status: 'pending',
@@ -273,6 +358,7 @@ exports.upload = async (req, res) => {
       questionPaperText: qpText,
       questionPaperOcrConfidence: Number(qpOcr?.confidence || 0),
       mode,
+      customInstructions: storedInstructions,
       students,
       totalStudents: students.length,
       completedStudents: 0,
@@ -320,7 +406,10 @@ exports.upload = async (req, res) => {
     res.status(201).json({
       success: true,
       jobId: job._id,
-      message: `Job queued. Processing ${students.length} answer sheet(s).`
+      message: `Job queued. Processing ${students.length} answer sheet(s).`,
+      processedCount: uniqueFiles.length,
+      skippedCount: skippedFiles.length,
+      skippedFiles
     });
   } catch (err) {
     console.error('upload error:', err);
@@ -334,7 +423,7 @@ exports.getStatus = async (req, res) => {
     const job = await EvalJob.findOne({
       _id: req.params.jobId,
       facultyId: req.faculty.id
-    }).select('questionPaperText questionPaperOcrConfidence students status mode totalStudents completedStudents currentlyProcessing excelPath createdAt completedAt');
+    }).select('questionPaperText questionPaperOcrConfidence students status mode customInstructions totalStudents completedStudents currentlyProcessing excelPath createdAt completedAt');
 
     if (!job) {
       return res.status(404).json({ error: 'Job not found.' });
@@ -347,10 +436,13 @@ exports.getStatus = async (req, res) => {
         : ''
     );
 
+    console.log('[TRACE 6] getStatus response customInstructions:', job.customInstructions);
+
     res.json({
       jobId: job._id,
       status: job.status,
       mode: job.mode,
+      customInstructions: job.customInstructions || '',
       totalStudents: job.totalStudents,
       pendingStudents: counts.pendingStudents,
       ocrProcessingStudents: counts.ocrProcessingStudents,
@@ -517,5 +609,52 @@ exports.getJobs = async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch jobs.' });
+  }
+};
+
+exports.getAnalytics = async (req, res) => {
+  try {
+    const ClassAnalytics = require('../models/ClassAnalytics');
+    const { regenerateClassAnalytics } = require('../services/analyticsService');
+    const facultyId = req.faculty.id;
+
+    console.log(`[ROUTE HIT] GET /api/eval/analytics - Faculty ID: ${facultyId}`);
+
+    let analytics = await ClassAnalytics.findOne({ facultyId });
+    if (analytics) {
+      console.log(`[Analytics DB Check] Analytics document found for Faculty: ${facultyId}`);
+    } else {
+      console.log(`[Analytics DB Check] Analytics document NOT found for Faculty: ${facultyId}. Regenerating...`);
+      analytics = await regenerateClassAnalytics(facultyId);
+    }
+
+    const totalJobs = await EvalJob.countDocuments({ facultyId });
+    const completedJobs = await EvalJob.countDocuments({ facultyId, status: 'completed' });
+    console.log(`[Analytics Stats] Faculty: ${facultyId} - Total jobs found: ${totalJobs}, Completed jobs found: ${completedJobs}, Total students aggregated: ${analytics ? analytics.totalStudents : 0}`);
+
+    res.json({ success: true, analytics });
+  } catch (err) {
+    console.error('getAnalytics error:', err);
+    res.status(500).json({ error: `Failed to fetch class performance analytics. ${err.message}` });
+  }
+};
+
+exports.refreshAnalytics = async (req, res) => {
+  try {
+    const { regenerateClassAnalytics } = require('../services/analyticsService');
+    const facultyId = req.faculty.id;
+
+    console.log(`[ROUTE HIT] POST /api/eval/analytics/refresh - Faculty ID: ${facultyId}`);
+
+    const analytics = await regenerateClassAnalytics(facultyId);
+
+    const totalJobs = await EvalJob.countDocuments({ facultyId });
+    const completedJobs = await EvalJob.countDocuments({ facultyId, status: 'completed' });
+    console.log(`[Analytics Stats After Refresh] Faculty: ${facultyId} - Total jobs found: ${totalJobs}, Completed jobs found: ${completedJobs}, Total students aggregated: ${analytics ? analytics.totalStudents : 0}`);
+
+    res.json({ success: true, analytics });
+  } catch (err) {
+    console.error('refreshAnalytics error:', err);
+    res.status(500).json({ error: `Failed to regenerate class performance analytics. ${err.message}` });
   }
 };

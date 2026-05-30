@@ -175,6 +175,19 @@ if (!mongoUri) {
         console.error('[Migration] Token migration failed:', err.message);
       }
 
+      // Backfill: Pre-populate analytics for all faculties with completed jobs on startup
+      try {
+        const EvalJob = require('./models/EvaluationJob');
+        const { enqueueAnalytics } = require('./services/analyticsService');
+        const uniqueFacultyIds = await EvalJob.distinct('facultyId', { status: 'completed' });
+        console.log(`[Analytics Startup Backfill] Found ${uniqueFacultyIds.length} faculties with completed jobs. Queuing updates.`);
+        for (const facultyId of uniqueFacultyIds) {
+          enqueueAnalytics(facultyId);
+        }
+      } catch (err) {
+        console.error('[Analytics Startup Backfill] Error:', err.message);
+      }
+
       try {
         await requeueIncompleteJobs();
       } catch (err) {
