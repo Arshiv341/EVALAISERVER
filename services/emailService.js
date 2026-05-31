@@ -29,19 +29,40 @@ function delay(ms) {
 }
 
 // ==========================
-// 🔥 SIMPLE & STABLE GMAIL TRANSPORTER
+// 🔥 CUSTOMISABLE SMTP TRANSPORTER WITH TIMEOUT CHECKS
 // ==========================
 function createTransporter() {
   if (!smtpUser || !smtpPass) {
     return null;
   }
 
+  const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const smtpPort = Number(process.env.SMTP_PORT) || 465;
+  
+  // Gmail SMTP defaults: 465 is secure (SSL), 587 is STARTTLS (secure: false, requireTLS: true)
+  const isSecure = process.env.SMTP_SECURE !== undefined 
+    ? process.env.SMTP_SECURE === 'true' 
+    : smtpPort === 465;
+
+  console.log('[email] Initializing SMTP Transport:', {
+    host: smtpHost,
+    port: smtpPort,
+    secure: isSecure
+  });
+
   return nodemailer.createTransport({
-    service: 'gmail',
+    host: smtpHost,
+    port: smtpPort,
+    secure: isSecure,
     auth: {
       user: smtpUser,
       pass: smtpPass
-    }
+    },
+    // Prevent cold connection timeouts on Render
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 30000,
+    requireTLS: smtpPort === 587
   });
 }
 
