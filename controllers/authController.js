@@ -294,11 +294,12 @@ exports.register = async (req, res) => {
 
     await clearOtpRecord(email);
     await checkAndApplyInstitutionalBenefits(faculty);
-    issueToken(res, faculty);
+    const token = issueToken(res, faculty);
 
     res.status(201).json({
       success: true,
       message: 'Account created!',
+      token,
       faculty: {
         id: faculty._id,
         name: faculty.name,
@@ -336,10 +337,11 @@ exports.login = async (req, res) => {
 
     await checkAndApplyInstitutionalBenefits(faculty);
 
-    issueToken(res, faculty, rememberMe);
+    const token = issueToken(res, faculty, rememberMe);
 
     res.json({
       success: true,
+      token,
       faculty: {
         id: faculty._id,
         name: faculty.name,

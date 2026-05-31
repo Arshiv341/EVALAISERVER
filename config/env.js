@@ -13,8 +13,7 @@ function validateEnv() {
     'MONGO_URI',
     'JWT_SECRET',
     'CLIENT_URL',
-    'EMAIL_USER',
-    'EMAIL_PASS',
+    'RESEND_API_KEY',
     'GEMINI_API_KEY',
     'RAZORPAY_KEY_ID',
     'RAZORPAY_KEY_SECRET'
