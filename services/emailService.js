@@ -69,12 +69,7 @@ function createTransporter() {
     socketTimeout: 45000,     // 45 seconds
     requireTLS: smtpPort === 587,
     // Detailed client/server transmission debugging logs
-    debug: true,
-    logger: {
-      info: (msg) => console.log(`[SMTP INFO] ${msg}`),
-      warn: (msg) => console.warn(`[SMTP WARN] ${msg}`),
-      error: (msg) => console.error(`[SMTP ERR] ${msg}`)
-    }
+    logger: true
   });
 }
 
