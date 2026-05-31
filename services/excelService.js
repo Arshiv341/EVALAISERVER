@@ -14,13 +14,16 @@ function columnLetter(index) {
 
 /**
  * Generate an Excel report for a completed evaluation job.
- * Layout:
- * Name | Roll No | Q1 | Q2 | ... | Total
+ * Generates ONE workbook with exactly TWO worksheets:
+ * 1. "Marks Summary": Name | Roll Number | Q1 | Q2 | ... | QN | Total Marks
+ * 2. "Deduction Analysis": Name | Roll Number | Q1 Deduction Reason | Q2 Deduction Reason | ...
  */
 async function generateExcel(job, outputDir) {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet('Results');
+  const sheet1 = workbook.addWorksheet('Marks Summary');
+  const sheet2 = workbook.addWorksheet('Deduction Analysis');
 
+  // 1. Detect max question count dynamically from all students
   let maxQ = 0;
   for (const student of job.students) {
     if (!Array.isArray(student.answers)) continue;
@@ -33,112 +36,115 @@ async function generateExcel(job, outputDir) {
   }
   if (maxQ === 0) maxQ = 1;
 
-  const columns = [
+  // 2. Define Columns for Sheet 1 (Marks Summary)
+  const s1Columns = [
     { header: 'Name', key: 'name', width: 28 },
-    { header: 'Roll No', key: 'roll', width: 18 }
+    { header: 'Roll Number', key: 'roll', width: 18 }
   ];
-
   for (let q = 1; q <= maxQ; q += 1) {
-    columns.push({
+    s1Columns.push({
       header: `Q${q}`,
       key: `q${q}`,
       width: 10,
       style: { alignment: { horizontal: 'center' } }
     });
   }
-
-  columns.push({
-    header: 'Total',
+  s1Columns.push({
+    header: 'Total Marks',
     key: 'total',
-    width: 12,
+    width: 15,
     style: { alignment: { horizontal: 'center' } }
   });
+  sheet1.columns = s1Columns;
 
-  columns.push(
-    { header: 'Reason for Deduction', key: 'deduction_reason', width: 45 },
-    { header: 'Improvement Suggestions', key: 'improvement_feedback', width: 45 },
-    { header: 'Strengths', key: 'strengths', width: 45 },
-    { header: 'Missing Points', key: 'missing_points', width: 45 }
-  );
+  // 3. Define Columns for Sheet 2 (Deduction Analysis)
+  const s2Columns = [
+    { header: 'Name', key: 'name', width: 28 },
+    { header: 'Roll Number', key: 'roll', width: 18 }
+  ];
+  for (let q = 1; q <= maxQ; q += 1) {
+    s2Columns.push({
+      header: `Q${q} Deduction Reason`,
+      key: `q${q}_reason`,
+      width: 40,
+      style: { alignment: { wrapText: true, vertical: 'top', horizontal: 'left' } }
+    });
+  }
+  sheet2.columns = s2Columns;
 
-  worksheet.columns = columns;
-
-  const headerRow = worksheet.getRow(1);
-  headerRow.height = 22;
-  headerRow.eachCell((cell, colNumber) => {
-    const col = worksheet.columns[colNumber - 1];
-    const isAiCol = ['deduction_reason', 'improvement_feedback', 'strengths', 'missing_points'].includes(col?.key);
-    cell.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: isAiCol ? 'FF4F46E5' : 'FF1E1B4B' }
-    };
-    cell.font = { color: { argb: 'FFF8FAFC' }, bold: true };
-    cell.border = {
-      bottom: { style: 'thin', color: { argb: isAiCol ? 'FFF472B6' : 'FF6366F1' } }
-    };
-    cell.alignment = { vertical: 'middle', horizontal: 'center' };
-  });
-
+  // 4. Fill Data for both sheets
   let rowIndex = 2;
   for (const student of job.students) {
     const answers = Array.isArray(student.answers) ? student.answers : [];
-    
-    const deduction_reason = answers
-      .map(ans => ans.deduction_reason?.trim() ? `Q${ans.question}: ${ans.deduction_reason.trim()}` : '')
-      .filter(Boolean)
-      .join('\n');
 
-    const improvement_feedback = answers
-      .map(ans => ans.improvement_feedback?.trim() ? `Q${ans.question}: ${ans.improvement_feedback.trim()}` : '')
-      .filter(Boolean)
-      .join('\n');
-
-    const strengths = answers
-      .map(ans => ans.strengths?.trim() ? `Q${ans.question}: ${ans.strengths.trim()}` : '')
-      .filter(Boolean)
-      .join('\n');
-
-    const missing_points = answers
-      .map(ans => {
-        const pts = Array.isArray(ans.missing_points) ? ans.missing_points : [];
-        return pts.length > 0 ? `Q${ans.question}:\n${pts.map(p => `• ${p.trim()}`).join('\n')}` : '';
-      })
-      .filter(Boolean)
-      .join('\n\n');
-
-    const rowData = {
+    // Sheet 1 Row Construction
+    const s1RowData = {
       name: student.studentName || student.originalName || 'Unknown',
-      roll: student.rollNumber || 'Unknown',
-      total: Number.isFinite(student.totalMarks) ? student.totalMarks : Number(student.totalMarks || 0),
-      deduction_reason,
-      improvement_feedback,
-      strengths,
-      missing_points
+      roll: student.rollNumber || 'Unknown'
     };
-
     for (let q = 1; q <= maxQ; q += 1) {
       const answer = answers.find(item => Number(item.question) === q);
-      rowData[`q${q}`] = Number.isFinite(answer?.marks) ? answer.marks : (answer ? Number(answer.marks || 0) : '');
+      s1RowData[`q${q}`] = (answer && Number.isFinite(answer.marks)) ? answer.marks : 0;
     }
 
-    const row = worksheet.addRow(rowData);
+    // Formula calculation of total marks automatically
+    const startColLetter = columnLetter(3); // Column C
+    const endColLetter = columnLetter(2 + maxQ); // End of questions column
+    s1RowData['total'] = { formula: `=SUM(${startColLetter}${rowIndex}:${endColLetter}${rowIndex})` };
 
-    row.eachCell((cell, colNumber) => {
-      const col = worksheet.columns[colNumber - 1];
-      const isAiCol = ['deduction_reason', 'improvement_feedback', 'strengths', 'missing_points'].includes(col?.key);
+    const row1 = sheet1.addRow(s1RowData);
 
-      if (isAiCol) {
-        cell.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
-      } else {
-        const alignment = { vertical: 'middle' };
-        if (col && (col.key.startsWith('q') || col.key === 'total')) {
-          alignment.horizontal = 'center';
-        } else {
-          alignment.horizontal = 'left';
+    // Sheet 2 Row Construction
+    const s2RowData = {
+      name: student.studentName || student.originalName || 'Unknown',
+      roll: student.rollNumber || 'Unknown'
+    };
+    for (let q = 1; q <= maxQ; q += 1) {
+      const answer = answers.find(item => Number(item.question) === q);
+      let deductionStr = 'No deduction';
+
+      if (answer) {
+        const parts = [];
+        if (answer.deduction_reason && answer.deduction_reason.trim()) {
+          parts.push(answer.deduction_reason.trim());
         }
-        cell.alignment = alignment;
+        if (Array.isArray(answer.missing_points) && answer.missing_points.length > 0) {
+          parts.push(`Missing: ${answer.missing_points.join(', ')}`);
+        }
+        if (answer.improvement_feedback && answer.improvement_feedback.trim()) {
+          parts.push(`Feedback: ${answer.improvement_feedback.trim()}`);
+        }
+
+        if (parts.length > 0) {
+          deductionStr = parts.join(' | ');
+        }
       }
+      s2RowData[`q${q}_reason`] = deductionStr;
+    }
+    const row2 = sheet2.addRow(s2RowData);
+
+    // Style row 1 cells (alternate colors and alignment)
+    row1.eachCell((cell, colNumber) => {
+      const alignment = { vertical: 'middle' };
+      if (colNumber <= 2) {
+        alignment.horizontal = 'left';
+      } else {
+        alignment.horizontal = 'center';
+      }
+      cell.alignment = alignment;
+
+      if (rowIndex % 2 === 0) {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF0F0F1A' }
+        };
+      }
+    });
+
+    // Style row 2 cells (alternate colors and wrap text)
+    row2.eachCell((cell, colNumber) => {
+      cell.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
 
       if (rowIndex % 2 === 0) {
         cell.fill = {
@@ -152,12 +158,29 @@ async function generateExcel(job, outputDir) {
     rowIndex += 1;
   }
 
-  worksheet.autoFilter = {
-    from: { row: 1, column: 1 },
-    to: { row: 1, column: columns.length }
+  // 5. Apply header styling and freeze panes for both sheets
+  const styleWorksheetHeader = (worksheet, isDarkPurple = true) => {
+    const headerRow = worksheet.getRow(1);
+    headerRow.height = 24;
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: isDarkPurple ? 'FF1E1B4B' : 'FF4F46E5' }
+      };
+      cell.font = { color: { argb: 'FFF8FAFC' }, bold: true };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+
+    worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+    worksheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: worksheet.columns.length }
+    };
   };
 
-  worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+  styleWorksheetHeader(sheet1, true); // Dark Purple for Marks Summary
+  styleWorksheetHeader(sheet2, false); // Indigo/Purple for Deduction Analysis
 
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });

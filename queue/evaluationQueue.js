@@ -1,9 +1,11 @@
 const EvalJob = require('../models/EvaluationJob');
 const { extractTextFromPDF } = require('../services/ocrService');
 const {
+  finalizeJob,
   maybeFinalizeJob,
   syncJobProgress
 } = require('../services/jobService');
+const { gradeStudentAnswerSheet } = require('../services/evaluationService');
 
 const OCR_PARALLELISM = 2;
 const MAX_JOB_TIME = 20 * 60 * 1000; // 20 minutes
@@ -79,86 +81,112 @@ async function processJob(jobId) {
   console.log(`[Queue] Starting job ${jobId} - ${job.students.length} students, mode: ${job.mode}`);
   await EvalJob.findByIdAndUpdate(jobId, { status: 'processing', currentlyProcessing: '' });
 
-  const pendingStudents = job.students.filter(student => student.status === 'pending');
+  const total = job.students.length;
 
-  for (let i = 0; i < pendingStudents.length; i += OCR_PARALLELISM) {
-    const batch = pendingStudents.slice(i, i + OCR_PARALLELISM);
+  for (let i = 0; i < total; i++) {
+    const student = job.students[i];
 
-    await Promise.all(batch.map(async student => {
-      const studentId = student._id;
-      try {
-        await EvalJob.updateOne(
-          { _id: jobId, 'students._id': studentId },
-          {
-            $set: {
-              'students.$.status': 'ocr_processing',
-              currentlyProcessing: student.originalName
-            }
+    // Skip already completed/failed/processed students if the job is resumed or retried
+    if (['completed', 'failed', 'error', 'ai_done'].includes(student.status)) {
+      continue;
+    }
+
+    const currentLabel = `PDF ${i + 1}/${total} Processing: ${student.originalName}`;
+    console.log(`[Queue] ${currentLabel}`);
+
+    try {
+      // 1. Update status to 'processing' and set the currentlyProcessing label
+      await EvalJob.updateOne(
+        { _id: jobId, 'students._id': student._id },
+        {
+          $set: {
+            'students.$.status': 'processing',
+            currentlyProcessing: currentLabel
           }
-        );
-
-        const result = await extractTextFromPDF(student.filePath);
-        const ocrText = result.answersText || result.rawText || '';
-
-        if (!String(ocrText).trim()) {
-          throw new Error('No readable text detected in the PDF.');
         }
+      );
+      await syncJobProgress(jobId);
 
-        await EvalJob.updateOne(
-          { _id: jobId, 'students._id': studentId },
-          {
-            $set: {
-              'students.$.status': 'ocr_done',
-              'students.$.ocrText': ocrText,
-              'students.$.ocrConfidence': Number(result.confidence || 0),
-              'students.$.studentName': result.studentName,
-              'students.$.rollNumber': result.rollNumber
-            }
-          }
-        );
+      // 2. Perform OCR text extraction
+      const result = await extractTextFromPDF(student.filePath);
+      const ocrText = result.answersText || result.rawText || '';
 
-        console.log(`[OCR] Done: ${student.originalName} -> ${result.studentName}`, {
-          pages: result.pageCount,
-          confidence: Number(result.confidence || 0)
-        });
-      } catch (err) {
-        console.error(`[OCR] Error on ${student.originalName}:`, {
-          message: err.message,
-          code: err.code,
-          responseCode: err.responseCode,
-          stack: err.stack
-        });
-        await EvalJob.updateOne(
-          { _id: jobId, 'students._id': studentId },
-          {
-            $set: {
-              'students.$.status': 'error',
-              'students.$.error': `OCR failed: ${err.message}`,
-              currentlyProcessing: ''
-            }
-          }
-        );
-        await syncJobProgress(jobId, { currentlyProcessing: student.originalName, status: 'processing' });
+      if (!String(ocrText).trim()) {
+        throw new Error('No readable text detected in the PDF.');
       }
-    }));
+
+      // Save intermediate OCR text to student sub-document
+      await EvalJob.updateOne(
+        { _id: jobId, 'students._id': student._id },
+        {
+          $set: {
+            'students.$.ocrText': ocrText,
+            'students.$.ocrConfidence': Number(result.confidence || 0),
+            'students.$.studentName': result.studentName,
+            'students.$.rollNumber': result.rollNumber
+          }
+        }
+      );
+
+      // 3. Perform AI Evaluation using Gemini API
+      console.log(`[Queue] Grading student: ${student.originalName}`);
+      const validatedResult = await gradeStudentAnswerSheet(
+        job.questionPaperText,
+        ocrText,
+        job.mode || 'avg',
+        Number(result.confidence || 0),
+        job.customInstructions
+      );
+
+      const finalName = (result.studentName && result.studentName !== 'Unknown')
+        ? result.studentName
+        : (validatedResult.studentName || student.originalName);
+
+      const finalRoll = (result.rollNumber && result.rollNumber !== 'Unknown')
+        ? result.rollNumber
+        : (validatedResult.rollNumber || 'Unknown');
+
+      // Save AI evaluation result and mark student as completed
+      await EvalJob.updateOne(
+        { _id: jobId, 'students._id': student._id },
+        {
+          $set: {
+            'students.$.answers': validatedResult.answers,
+            'students.$.totalMarks': validatedResult.totalMarks,
+            'students.$.studentName': finalName,
+            'students.$.rollNumber': finalRoll,
+            'students.$.status': 'completed',
+            'students.$.processedAt': new Date(),
+            'students.$.error': ''
+          }
+        }
+      );
+
+      console.log(`[Queue] Evaluation completed for ${student.originalName} -> ${finalName}`);
+
+    } catch (err) {
+      console.error(`[Queue] Evaluation failed for ${student.originalName}:`, err.message);
+
+      // Mark student as failed and record the failure message
+      await EvalJob.updateOne(
+        { _id: jobId, 'students._id': student._id },
+        {
+          $set: {
+            'students.$.status': 'failed',
+            'students.$.error': err.message,
+            'students.$.processedAt': new Date()
+          }
+        }
+      );
+    } finally {
+      // Sync job completion count in database
+      await syncJobProgress(jobId);
+    }
   }
 
-  const freshJob = await EvalJob.findById(jobId);
-  const ocrDoneStudents = freshJob.students.filter(student => student.status === 'ocr_done');
-
-  const finalizedJob = await maybeFinalizeJob(jobId);
-  if (finalizedJob) {
-    console.log(`[Queue] Job ${jobId} completed`);
-    return;
-  }
-
-  if (ocrDoneStudents.length > 0) {
-    await syncJobProgress(jobId, {
-      status: 'processing',
-      currentlyProcessing: 'Waiting for browser AI'
-    });
-    console.log(`[Queue] Job ${jobId} OCR complete. Waiting for browser AI.`);
-  }
+  // Once all students have been processed, finalize the job and output the Excel sheet
+  console.log(`[Queue] All students processed. Finalizing job: ${jobId}`);
+  await finalizeJob(jobId);
 }
 
 module.exports = {
