@@ -44,10 +44,11 @@ function createTransporter() {
     ? process.env.SMTP_SECURE === 'true' 
     : smtpPort === 465;
 
-  console.log('[email] Initializing SMTP Transport:', {
+  console.log('[email] Creating SMTP Transport:', {
     host: smtpHost,
     port: smtpPort,
-    secure: isSecure
+    secure: isSecure,
+    user: smtpUser ? `${smtpUser.slice(0, 3)}***` : '(missing)'
   });
 
   return nodemailer.createTransport({
@@ -58,11 +59,22 @@ function createTransporter() {
       user: smtpUser,
       pass: smtpPass
     },
-    // Prevent cold connection timeouts on Render
-    connectionTimeout: 20000,
-    greetingTimeout: 20000,
-    socketTimeout: 30000,
-    requireTLS: smtpPort === 587
+    // Pool options to reuse SMTP connections
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    // Timeout limits (increased to handle cold/handshake issues on Render)
+    connectionTimeout: 30000, // 30 seconds
+    greetingTimeout: 30000,   // 30 seconds
+    socketTimeout: 45000,     // 45 seconds
+    requireTLS: smtpPort === 587,
+    // Detailed client/server transmission debugging logs
+    debug: true,
+    logger: {
+      info: (msg) => console.log(`[SMTP INFO] ${msg}`),
+      warn: (msg) => console.warn(`[SMTP WARN] ${msg}`),
+      error: (msg) => console.error(`[SMTP ERR] ${msg}`)
+    }
   });
 }
 
@@ -205,41 +217,52 @@ function buildOtpEmailText(name, otp) {
 // 🔥 SEND MAIL WITH RETRY
 // ==========================
 async function sendMailWithRetry(mailOptions, label, retries = 3) {
-
   let lastError = null;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
-
     try {
-
+      console.log(`[email] [Attempt ${attempt}/${retries}] VERIFICATION START: Verifying SMTP connection...`);
+      const verificationStart = Date.now();
+      
       const current = await verifyTransporter({
         force: attempt > 1
       });
+      
+      console.log(`[email] [Attempt ${attempt}/${retries}] VERIFICATION SUCCESS: Transporter verified in ${Date.now() - verificationStart}ms.`);
 
-      console.log(`[email] Sending ${label} (${attempt}/${retries})`);
+      console.log(`[email] [Attempt ${attempt}/${retries}] SENDMAIL START: Dispatching ${label}...`, {
+        from: mailOptions.from,
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        htmlLength: mailOptions.html ? mailOptions.html.length : 0
+      });
 
+      const sendStart = Date.now();
       const info = await current.sendMail(mailOptions);
+      const sendDuration = Date.now() - sendStart;
 
-      console.log('✅ EMAIL SENT:', {
+      console.log(`✅ [email] [Attempt ${attempt}/${retries}] SENDMAIL SUCCESS: Email delivered in ${sendDuration}ms. Full Response:`, {
         to: mailOptions.to,
         messageId: info.messageId,
-        response: info.response
+        response: info.response,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        envelope: info.envelope
       });
 
       return info;
 
     } catch (err) {
-
       lastError = err;
-
       transporterVerified = false;
 
-      console.error(`❌ EMAIL SEND FAILED (${attempt}/${retries})`, {
+      console.error(`❌ [email] [Attempt ${attempt}/${retries}] FAILURE: sendMail stage failed. Diagnostic info:`, {
         message: err.message,
         code: err.code,
         responseCode: err.responseCode,
         response: err.response,
-        command: err.command
+        command: err.command,
+        stack: err.stack
       });
 
       const shouldRetry =
@@ -247,13 +270,12 @@ async function sendMailWithRetry(mailOptions, label, retries = 3) {
         isRetryableSmtpError(err);
 
       if (!shouldRetry) {
+        console.log(`[email] [Attempt ${attempt}/${retries}] ERROR STAGE: Non-retryable error or retries exhausted. Aborting.`);
         break;
       }
 
-      const waitMs = 500 * attempt;
-
-      console.log(`⏳ Retrying in ${waitMs}ms`);
-
+      const waitMs = 1000 * attempt;
+      console.log(`⏳ [email] [Attempt ${attempt}/${retries}] RETRY DELAY: Scheduling next try in ${waitMs}ms...`);
       await delay(waitMs);
     }
   }
