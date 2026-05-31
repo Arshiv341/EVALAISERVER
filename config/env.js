@@ -8,15 +8,19 @@ const path = require('path');
 
 function validateEnv() {
   const errors = [];
+  const warnings = [];
 
   const requiredVars = [
     'MONGO_URI',
     'JWT_SECRET',
     'CLIENT_URL',
-    'RESEND_API_KEY',
     'GEMINI_API_KEY',
     'RAZORPAY_KEY_ID',
     'RAZORPAY_KEY_SECRET'
+  ];
+
+  const optionalVars = [
+    'RESEND_API_KEY'
   ];
 
   const hasGoogleApplicationCredentials = Boolean(
@@ -46,6 +50,13 @@ function validateEnv() {
     }
   }
 
+  for (const key of optionalVars) {
+    const value = process.env[key];
+    if (!value || !value.trim()) {
+      warnings.push(`${key}`);
+    }
+  }
+
   // Validate CLIENT_URL format
   if (process.env.CLIENT_URL) {
     const urls = process.env.CLIENT_URL
@@ -61,8 +72,16 @@ function validateEnv() {
     }
   }
 
+  if (warnings.length > 0) {
+    console.warn('\n⚠️ ENV VALIDATION WARNING:');
+    warnings.forEach(warn => {
+      console.warn(`- ${warn} is missing (optional services like email/OTP will be disabled)`);
+    });
+    console.log('');
+  }
+
   if (errors.length > 0) {
-    console.error('\nENV VALIDATION FAILED\n');
+    console.error('\n❌ ENV VALIDATION FAILED\n');
 
     errors.forEach(err => {
       console.error(`- ${err}`);
