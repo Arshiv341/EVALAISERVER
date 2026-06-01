@@ -1,7 +1,7 @@
 const https = require('https');
 
 const GEMINI_HOST = 'generativelanguage.googleapis.com';
-const GEMINI_PATH = '/v1beta/models/gemini-flash-latest:generateContent';
+const GEMINI_PATH = '/v1beta/models/gemini-2.5-flash:generateContent';
 
 function forwardGeminiGenerateContent(payload) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -41,6 +41,10 @@ function forwardGeminiGenerateContent(payload) {
         });
       }
     );
+
+    request.setTimeout(120000, () => {
+      request.destroy(new Error('Gemini API request timeout after 120 seconds'));
+    });
 
     request.on('error', reject);
     request.write(body);

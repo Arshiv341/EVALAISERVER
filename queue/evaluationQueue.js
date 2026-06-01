@@ -13,6 +13,25 @@ let isRunning = false;
 const jobQueue = [];
 const queuedJobIds = new Set();
 
+async function retryAsync(fn, retries = 2, delay = 1000, contextLabel = '', onRetry = null) {
+  let attempt = 0;
+  while (attempt <= retries) {
+    try {
+      return await fn();
+    } catch (err) {
+      attempt++;
+      console.warn(`[RETRY][${contextLabel}] Attempt ${attempt}/${retries} failed: ${err.message}`);
+      if (attempt > retries) {
+        throw err;
+      }
+      if (onRetry) {
+        await onRetry(attempt, err);
+      }
+      await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+    }
+  }
+}
+
 function enqueue(jobId) {
   const id = String(jobId);
   if (queuedJobIds.has(id)) return false;
@@ -128,14 +147,39 @@ async function processJob(jobId) {
         }
       );
 
-      // 3. Perform AI Evaluation using Gemini API
+      // 3. Perform AI Evaluation using Gemini API with retry
       console.log(`[Queue] Grading student: ${student.originalName}`);
-      const validatedResult = await gradeStudentAnswerSheet(
+      const updateStatusToRetrying = async (attempt, err) => {
+        try {
+          await EvalJob.updateOne(
+            { _id: jobId, 'students._id': student._id },
+            {
+              $set: {
+                'students.$.status': 'retrying',
+                'students.$.error': `Grading attempt ${attempt} failed: ${err.message}`
+              }
+            }
+          );
+          await syncJobProgress(jobId);
+        } catch (dbErr) {
+          console.error('[Queue] Failed to update status to retrying:', dbErr.message);
+        }
+      };
+
+      const gradeFn = () => gradeStudentAnswerSheet(
         job.questionPaperText,
         ocrText,
         job.mode || 'avg',
         Number(result.confidence || 0),
         job.customInstructions
+      );
+
+      const validatedResult = await retryAsync(
+        gradeFn,
+        2,
+        2000,
+        `${student.originalName} Grading`,
+        updateStatusToRetrying
       );
 
       const finalName = (result.studentName && result.studentName !== 'Unknown')
