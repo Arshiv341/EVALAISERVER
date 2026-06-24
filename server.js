@@ -147,7 +147,21 @@ app.use((err, _req, res, _next) => {
 if (!mongoUri) {
   console.error('MONGO_URI is missing. Database-backed APIs will fail until it is set.');
 } else {
-  mongoose.connect(mongoUri)
+  // Register database connection event listeners
+  mongoose.connection.on('disconnected', () => {
+    console.warn('⚠️ [database] MongoDB connection lost! Attempting to reconnect...');
+  });
+  mongoose.connection.on('reconnected', () => {
+    console.log('✅ [database] MongoDB reconnected successfully.');
+  });
+  mongoose.connection.on('error', (err) => {
+    console.error('❌ [database] MongoDB connection error:', err.message);
+  });
+
+  mongoose.connect(mongoUri, {
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000
+  })
     .then(async () => {
       console.log('MongoDB connected');
       
@@ -196,10 +210,23 @@ if (!mongoUri) {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`[system] Node version: ${process.version} on ${process.platform}`);
+  console.log(`[system] Initial heap memory usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
   if (!isProd) {
     console.log('[debug] Email test route enabled: POST /api/auth/test-email');
   }
 }).on('error', err => {
   console.error('Server failed to start:', err);
+  process.exit(1);
+});
+
+// Global Process Exception Handlers
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ [process] Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ [process] Uncaught Exception thrown:', err.message || err);
   process.exit(1);
 });
