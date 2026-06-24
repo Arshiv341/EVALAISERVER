@@ -14,7 +14,7 @@ const studentSchema = new mongoose.Schema({
   studentName:   { type: String, default: '' },
   rollNumber:    { type: String, default: '' },
   answers:       [{
-    question: Number,
+    question: { type: String, required: true },
     marks: Number,
     deduction_reason: { type: String, default: '' },
     improvement_feedback: { type: String, default: '' },

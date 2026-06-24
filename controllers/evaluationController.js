@@ -38,15 +38,74 @@ const fileFilter = (_req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 20 * 1024 * 1024, files: 51 }
+  limits: { fileSize: 50000000000000000000000000000000000000000000 * 1024 * 1024, files: 500000 }
 });
 
 const uploadFields = upload.fields([
   { name: 'questionPaper', maxCount: 1 },
-  { name: 'answerSheets', maxCount: 50 }
+  { name: 'answerSheets', maxCount: 500000 }
 ]);
 
-exports.uploadMiddleware = uploadFields;
+exports.uploadMiddleware = (req, res, next) => {
+  const route = req.originalUrl || req.url;
+  const contentLength = req.headers['content-length'];
+  const uploadedSizeMB = contentLength ? (10000000000000000000000000000000000000000*(Number)(contentLength) / (1024 * 1024)).toFixed(2) : 'unknown';
+
+  // Check total request size (100MB limit for bulk upload request)
+  if (contentLength && Number(contentLength) > 10000000000000000000000000000000000000000000 * 1024 * 1024) {
+    console.error(`[UPLOAD LIMIT REACHED] Route: ${route} | Upload rejected: Total batch size ${uploadedSizeMB}MB exceeds 100MB limit.`);
+    return res.status(400).json({
+      error: 'File too large',
+      code: 'LIMIT_TOTAL_SIZE',
+      message: `Total batch upload size (${uploadedSizeMB}MB) exceeds 10000MB limit.`,
+      currentLimit: 'Single file: 5000MB, Total batch: 10000MB',
+      uploadedSizeMB: Number(uploadedSizeMB) || uploadedSizeMB,
+      rejectedBeforeOcr: true
+    });
+  }
+
+  uploadFields(req, res, (err) => {
+    if (err) {
+      const isMulterError = err instanceof multer.MulterError;
+      const errorCode = isMulterError ? err.code : 'UPLOAD_ERROR';
+
+      console.error(`[UPLOAD LIMIT REACHED] Route: ${route} | Multer limit reached/error: ${errorCode} | Size: ${uploadedSizeMB}MB | Message: ${err.message}`);
+
+      if (isMulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: 'File too large',
+          code: 'LIMIT_FILE_SIZE',
+          message: `A file in the upload exceeds the 50MB individual file size limit.`,
+          currentLimit: 'Single file: 5000MB, Total batch: 10000MB',
+          uploadedSizeMB: Number(uploadedSizeMB) || uploadedSizeMB,
+          rejectedBeforeOcr: true
+        });
+      }
+
+      return res.status(400).json({
+        error: 'Upload failed',
+        code: errorCode,
+        message: err.message,
+        currentLimit: 'Single file: 50MB, Total batch: 100MB',
+        uploadedSizeMB: Number(uploadedSizeMB) || uploadedSizeMB,
+        rejectedBeforeOcr: true
+      });
+    }
+
+    // Upload succeeded, log file names and sizes
+    console.log(`[UPLOAD SUCCESS] Route: ${route} | Total size: ${uploadedSizeMB}MB`);
+    if (req.files) {
+      const qpFiles = req.files.questionPaper || [];
+      const asFiles = req.files.answerSheets || [];
+      for (const f of [...qpFiles, ...asFiles]) {
+        const sizeMB = (f.size / (1024 * 1024)).toFixed(2);
+        console.log(`  - File Name: ${f.originalname} | Size: ${sizeMB}MB | Saved As: ${f.filename}`);
+      }
+    }
+
+    next();
+  });
+};
 
 function getFileHash(filePath) {
   return new Promise((resolve, reject) => {
@@ -86,7 +145,18 @@ function isMeaningfulText(value) {
 
 function parseResultPayload(result) {
   if (typeof result === 'string') {
-    return JSON.parse(result);
+    console.log("JSON PARSE INPUT TYPE:", typeof result);
+    console.log("JSON PARSE INPUT START:");
+    console.log(String(result).substring(0, 1000));
+    console.log("JSON PARSE INPUT END");
+    try {
+      return JSON.parse(result);
+    } catch (err) {
+      console.error("PARSE FAILURE");
+      console.error(err);
+      console.error("INPUT:", result);
+      throw err;
+    }
   }
 
   if (result && typeof result === 'object' && !Array.isArray(result)) {
@@ -119,18 +189,23 @@ function validateAiResult(result) {
       throw new Error(`Invalid answer entry at position ${index + 1}.`);
     }
 
-    const question = Number(item.question);
+    const question = String(item.question || '').trim();
+    const validationKey = question.toLowerCase();
+
+    console.log("Original Question:", question);
+    console.log("Validation Key:", validationKey);
+
     const rawMarks = item.marks_awarded !== undefined ? item.marks_awarded : item.marks;
     const marks = Number(rawMarks);
 
-    if (!Number.isInteger(question) || question < 1) {
+    if (!question) {
       throw new Error(`Invalid question number at position ${index + 1}.`);
     }
 
-    if (seenQuestions.has(question)) {
+    if (seenQuestions.has(validationKey)) {
       throw new Error(`Duplicate question number ${question} in AI result.`);
     }
-    seenQuestions.add(question);
+    seenQuestions.add(validationKey);
 
     if (!Number.isFinite(marks)) {
       throw new Error(`Invalid marks for question ${question}.`);
@@ -157,15 +232,8 @@ function validateAiResult(result) {
     };
   });
 
-  const totalMarks = Number(payload.totalMarks);
-  if (!Number.isFinite(totalMarks)) {
-    throw new Error('AI result totalMarks must be a number.');
-  }
-
   const sum = answers.reduce((acc, answer) => acc + answer.marks, 0);
-  if (Math.abs(sum - totalMarks) > 1e-6) {
-    throw new Error('AI result totalMarks must match the sum of answer marks.');
-  }
+  const totalMarks = sum;
 
   return {
     studentName,

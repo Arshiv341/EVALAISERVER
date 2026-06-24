@@ -1,7 +1,7 @@
 const https = require('https');
 
 const GEMINI_HOST = 'generativelanguage.googleapis.com';
-const GEMINI_PATH = '/v1beta/models/gemini-flash-latest:generateContent';
+const GEMINI_PATH = '/v1beta/models/gemini-2.5-flash:generateContent';
 
 function forwardGeminiGenerateContent(payload) {
   const apiKey = process.env.GEMINI_API_KEY;

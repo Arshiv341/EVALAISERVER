@@ -12,6 +12,21 @@ function columnLetter(index) {
   return letter;
 }
 
+function getCompactIdentifier(q) {
+  const str = String(q || '').trim();
+  const match = str.match(/^(?:(?:Question|Q)\s*[\.\-]?\s*)?(\d+)(?:\s*[\.\-]?\s*\(?\s*([a-zA-Z])\s*\)?)?/i);
+  if (match) {
+    const num = match[1];
+    const letter = match[2];
+    if (letter) {
+      return `Q${num}(${letter.toLowerCase()})`;
+    }
+    return `Q${num}`;
+  }
+  console.warn(`[Excel Export Warning] Cannot extract question identifier from: "${q}". Falling back to original text.`);
+  return str;
+}
+
 /**
  * Generate an Excel report for a completed evaluation job.
  * Layout:
@@ -19,54 +34,78 @@ function columnLetter(index) {
  */
 async function generateExcel(job, outputDir) {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet('Results');
+  const marksSheet = workbook.addWorksheet('Student Marks Summary');
+  const feedbackSheet = workbook.addWorksheet('Student Evaluation Feedback');
 
-  let maxQ = 0;
+  const normalizedKeys = new Set();
   for (const student of job.students) {
     if (!Array.isArray(student.answers)) continue;
     for (const answer of student.answers) {
-      const questionNumber = Number(answer?.question);
-      if (Number.isFinite(questionNumber) && questionNumber > maxQ) {
-        maxQ = questionNumber;
+      const qKey = String(answer?.question || '').trim();
+      if (qKey) {
+        normalizedKeys.add(getCompactIdentifier(qKey));
       }
     }
   }
-  if (maxQ === 0) maxQ = 1;
 
-  const columns = [
+  const sortedNormalizedQuestions = Array.from(normalizedKeys).sort((a, b) => {
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  });
+
+  const marksColumns = [
     { header: 'Name', key: 'name', width: 28 },
     { header: 'Roll No', key: 'roll', width: 18 }
   ];
 
-  for (let q = 1; q <= maxQ; q += 1) {
-    columns.push({
-      header: `Q${q}`,
-      key: `q${q}`,
+  for (const q of sortedNormalizedQuestions) {
+    marksColumns.push({
+      header: q,
+      key: `col_${q}`,
       width: 10,
       style: { alignment: { horizontal: 'center' } }
     });
   }
 
-  columns.push({
+  marksColumns.push({
     header: 'Total',
     key: 'total',
     width: 12,
     style: { alignment: { horizontal: 'center' } }
   });
 
-  columns.push(
+  const feedbackColumns = [
+    { header: 'Name', key: 'name', width: 28 },
+    { header: 'Roll No', key: 'roll', width: 18 },
     { header: 'Reason for Deduction', key: 'deduction_reason', width: 45 },
     { header: 'Improvement Suggestions', key: 'improvement_feedback', width: 45 },
     { header: 'Strengths', key: 'strengths', width: 45 },
     { header: 'Missing Points', key: 'missing_points', width: 45 }
-  );
+  ];
 
-  worksheet.columns = columns;
+  marksSheet.columns = marksColumns;
+  feedbackSheet.columns = feedbackColumns;
 
-  const headerRow = worksheet.getRow(1);
-  headerRow.height = 22;
-  headerRow.eachCell((cell, colNumber) => {
-    const col = worksheet.columns[colNumber - 1];
+  const marksHeaderRow = marksSheet.getRow(1);
+  marksHeaderRow.height = 22;
+  marksHeaderRow.eachCell((cell, colNumber) => {
+    const col = marksSheet.columns[colNumber - 1];
+    const isAiCol = ['deduction_reason', 'improvement_feedback', 'strengths', 'missing_points'].includes(col?.key);
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: isAiCol ? 'FF4F46E5' : 'FF1E1B4B' }
+    };
+    cell.font = { color: { argb: 'FFF8FAFC' }, bold: true };
+    cell.border = {
+      bottom: { style: 'thin', color: { argb: isAiCol ? 'FFF472B6' : 'FF6366F1' } }
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  });
+
+  const feedbackHeaderRow = feedbackSheet.getRow(1);
+  feedbackHeaderRow.height = 22;
+  feedbackHeaderRow.eachCell((cell, colNumber) => {
+    const col = feedbackSheet.columns[colNumber - 1];
     const isAiCol = ['deduction_reason', 'improvement_feedback', 'strengths', 'missing_points'].includes(col?.key);
     cell.fill = {
       type: 'pattern',
@@ -117,15 +156,43 @@ async function generateExcel(job, outputDir) {
       missing_points
     };
 
-    for (let q = 1; q <= maxQ; q += 1) {
-      const answer = answers.find(item => Number(item.question) === q);
-      rowData[`q${q}`] = Number.isFinite(answer?.marks) ? answer.marks : (answer ? Number(answer.marks || 0) : '');
+    for (const q of sortedNormalizedQuestions) {
+      const answer = answers.find(item => {
+        const rawQ = String(item.question || '').trim();
+        return getCompactIdentifier(rawQ).toLowerCase() === q.toLowerCase();
+      });
+      rowData[`col_${q}`] = answer && Number.isFinite(answer.marks) ? answer.marks : '';
     }
 
-    const row = worksheet.addRow(rowData);
+    const marksRow = marksSheet.addRow(rowData);
+    marksRow.eachCell((cell, colNumber) => {
+      const col = marksSheet.columns[colNumber - 1];
+      const isAiCol = ['deduction_reason', 'improvement_feedback', 'strengths', 'missing_points'].includes(col?.key);
 
-    row.eachCell((cell, colNumber) => {
-      const col = worksheet.columns[colNumber - 1];
+      if (isAiCol) {
+        cell.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
+      } else {
+        const alignment = { vertical: 'middle' };
+        if (col && (col.key.startsWith('q') || col.key === 'total')) {
+          alignment.horizontal = 'center';
+        } else {
+          alignment.horizontal = 'left';
+        }
+        cell.alignment = alignment;
+      }
+
+      if (rowIndex % 2 === 0) {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF0F0F1A' }
+        };
+      }
+    });
+
+    const feedbackRow = feedbackSheet.addRow(rowData);
+    feedbackRow.eachCell((cell, colNumber) => {
+      const col = feedbackSheet.columns[colNumber - 1];
       const isAiCol = ['deduction_reason', 'improvement_feedback', 'strengths', 'missing_points'].includes(col?.key);
 
       if (isAiCol) {
@@ -152,12 +219,17 @@ async function generateExcel(job, outputDir) {
     rowIndex += 1;
   }
 
-  worksheet.autoFilter = {
+  marksSheet.autoFilter = {
     from: { row: 1, column: 1 },
-    to: { row: 1, column: columns.length }
+    to: { row: 1, column: marksColumns.length }
   };
+  marksSheet.views = [{ state: 'frozen', ySplit: 1 }];
 
-  worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+  feedbackSheet.autoFilter = {
+    from: { row: 1, column: 1 },
+    to: { row: 1, column: feedbackColumns.length }
+  };
+  feedbackSheet.views = [{ state: 'frozen', ySplit: 1 }];
 
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });

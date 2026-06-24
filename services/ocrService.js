@@ -453,6 +453,27 @@ async function extractTextFromPDF(filePath) {
   };
 }
 
+function isValidStudentName(name) {
+  if (!name) return false;
+  const clean = name.trim();
+  if (clean.length < 2 || clean.length > 50) return false;
+  
+  // Reject names that contain brackets, parentheses, semicolons, or other coding markers
+  if (/[{}();#<>\[\]\/]/g.test(clean)) return false;
+  
+  // Reject if it contains common programming keywords as separate words
+  const lower = clean.toLowerCase();
+  const badKeywords = [
+    'void', 'int', 'float', 'double', 'class', 'struct', 'return', 'include',
+    'using', 'namespace', 'cout', 'cin', 'public', 'private', 'parameter',
+    'function', 'object', 'prototype', 'define', 'if', 'else', 'for', 'while'
+  ];
+  for (const kw of badKeywords) {
+    if (lower.split(/\s+/).includes(kw)) return false;
+  }
+  return true;
+}
+
 function extractField(text, labels) {
   const lines = String(text || '')
     .replace(/\r/g, '\n')
@@ -462,7 +483,8 @@ function extractField(text, labels) {
 
   for (const line of lines) {
     for (const label of labels) {
-      const pattern = new RegExp(`^${escapeRegex(label)}\\s*[:=\\-|]?\\s*(.+)$`, 'i');
+      // Use word boundaries around label to avoid substring matching
+      const pattern = new RegExp(`^\\s*[^a-zA-Z0-9]*\\s*\\b${escapeRegex(label)}\\b\\s*[:=\\-|]?\\s*(.+)$`, 'i');
       const match = line.match(pattern);
       if (match && match[1]) {
         const candidate = normalizeLine(match[1]);
@@ -472,7 +494,8 @@ function extractField(text, labels) {
   }
 
   for (const label of labels) {
-    const genericPattern = new RegExp(`${escapeRegex(label)}\\s*[:=\\-|]?\\s*([^\\n]+)`, 'i');
+    // Use word boundaries around label to avoid substring matching
+    const genericPattern = new RegExp(`\\b${escapeRegex(label)}\\b\\s*[:=\\-|]?\\s*([^\\n]+)`, 'i');
     const match = String(text || '').match(genericPattern);
     if (match && match[1]) {
       const candidate = normalizeLine(match[1]);
@@ -488,15 +511,28 @@ function escapeRegex(value) {
 }
 
 function extractMetadata(text) {
-  const studentName = extractField(text, [
+  const lines = String(text || '')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const headerLines = lines.slice(0, 10);
+  const headerText = headerLines.join('\n');
+
+  let studentName = extractField(headerText, [
     'student name',
-    'name',
     'candidate name',
     'full name',
-    'naam'
+    'naam',
+    'name'
   ]);
 
-  const rollNumber = extractField(text, [
+  if (studentName && !isValidStudentName(studentName)) {
+    studentName = '';
+  }
+
+  const rollNumber = extractField(headerText, [
     'roll no',
     'roll number',
     'roll',
@@ -505,6 +541,13 @@ function extractMetadata(text) {
     'registration number',
     'student id'
   ]);
+
+  if (studentName === 'Unknown' || !studentName) {
+    const firstLine = lines[0] || '';
+    if (firstLine && firstLine.length < 50 && !firstLine.includes(':') && !/\d/.test(firstLine) && isValidStudentName(firstLine)) {
+      studentName = firstLine;
+    }
+  }
 
   return {
     studentName: studentName || 'Unknown',

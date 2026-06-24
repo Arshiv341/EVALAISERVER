@@ -104,6 +104,9 @@ async function processJob(jobId) {
           throw new Error('No readable text detected in the PDF.');
         }
 
+        console.log("PDF PAGE COUNT:", result.pageCount);
+        console.log("OCR TEXT LENGTH:", ocrText.length);
+
         await EvalJob.updateOne(
           { _id: jobId, 'students._id': studentId },
           {

@@ -246,31 +246,29 @@ async function regenerateClassAnalytics(facultyId) {
   const questionStats = {};
   for (const student of allStudents) {
     for (const ans of student.answers) {
-      const qNum = Number(ans.question);
-      if (Number.isInteger(qNum) && qNum > 0) {
-        if (!questionStats[qNum]) {
-          questionStats[qNum] = [];
+      const qKey = String(ans.question || '').trim();
+      if (qKey) {
+        if (!questionStats[qKey]) {
+          questionStats[qKey] = [];
         }
-        questionStats[qNum].push(Number(ans.marks || 0));
+        questionStats[qKey].push(Number(ans.marks || 0));
       }
     }
   }
 
-  const topicAnalytics = Object.entries(questionStats).map(([qNum, marksList]) => {
+  const topicAnalytics = Object.entries(questionStats).map(([qKey, marksList]) => {
     const avg = marksList.reduce((a, b) => a + b, 0) / marksList.length;
     const maxQMarks = Math.max(...marksList, 1);
     // Success rate is percentage of students who got >= 50% of the max mark achieved for this question
     const passingQCount = marksList.filter(m => m >= 0.5 * maxQMarks).length;
     const successRate = Math.round((passingQCount / marksList.length) * 100);
     return {
-      topic: `Question ${qNum}`,
+      topic: qKey.startsWith('Q') ? qKey : `Question ${qKey}`,
       averageScore: Math.round(avg * 10) / 10,
       successRate
     };
   }).sort((a, b) => {
-    const numA = Number(a.topic.replace('Question ', ''));
-    const numB = Number(b.topic.replace('Question ', ''));
-    return numA - numB;
+    return String(a.topic).localeCompare(String(b.topic), undefined, { numeric: true, sensitivity: 'base' });
   });
 
   // Weak & Strong topics for compatibility with existing charts data structure
