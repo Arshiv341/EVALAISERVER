@@ -23,22 +23,32 @@ function validateEnv() {
 
   const optionalVars = [];
 
-  const hasGoogleApplicationCredentials = Boolean(
-    String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
+  const hasVisionEnvVars = Boolean(
+    String(process.env.GOOGLE_PROJECT_ID || '').trim() &&
+    String(process.env.GOOGLE_CLIENT_EMAIL || '').trim() &&
+    String(process.env.GOOGLE_PRIVATE_KEY || '').trim()
   );
 
-  if (!hasGoogleApplicationCredentials) {
-    requiredVars.push('GOOGLE_PROJECT_ID');
-    requiredVars.push('GOOGLE_CLIENT_EMAIL');
-    requiredVars.push('GOOGLE_PRIVATE_KEY');
+  if (hasVisionEnvVars) {
+    console.log('[env] Google Vision configured via environment variables.');
   } else {
-    const credentialPath = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
-    const resolvedCredentialPath = path.isAbsolute(credentialPath)
-      ? credentialPath
-      : path.resolve(__dirname, '..', credentialPath);
+    const hasGoogleApplicationCredentials = Boolean(
+      String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
+    );
 
-    if (!fs.existsSync(resolvedCredentialPath)) {
-      errors.push(`GOOGLE_APPLICATION_CREDENTIALS file not found: ${credentialPath}`);
+    if (!hasGoogleApplicationCredentials) {
+      requiredVars.push('GOOGLE_PROJECT_ID');
+      requiredVars.push('GOOGLE_CLIENT_EMAIL');
+      requiredVars.push('GOOGLE_PRIVATE_KEY');
+    } else {
+      const credentialPath = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
+      const resolvedCredentialPath = path.isAbsolute(credentialPath)
+        ? credentialPath
+        : path.resolve(__dirname, '..', credentialPath);
+
+      if (!fs.existsSync(resolvedCredentialPath)) {
+        errors.push(`GOOGLE_APPLICATION_CREDENTIALS file not found: ${credentialPath}`);
+      }
     }
   }
 
