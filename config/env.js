@@ -32,23 +32,14 @@ function validateEnv() {
   if (hasVisionEnvVars) {
     console.log('[env] Google Vision configured via environment variables.');
   } else {
-    const hasGoogleApplicationCredentials = Boolean(
-      String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
-    );
-
-    if (!hasGoogleApplicationCredentials) {
-      requiredVars.push('GOOGLE_PROJECT_ID');
-      requiredVars.push('GOOGLE_CLIENT_EMAIL');
-      requiredVars.push('GOOGLE_PRIVATE_KEY');
-    } else {
-      const credentialPath = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
-      const resolvedCredentialPath = path.isAbsolute(credentialPath)
-        ? credentialPath
-        : path.resolve(__dirname, '..', credentialPath);
-
-      if (!fs.existsSync(resolvedCredentialPath)) {
-        errors.push(`GOOGLE_APPLICATION_CREDENTIALS file not found: ${credentialPath}`);
-      }
+    if (!process.env.GOOGLE_PROJECT_ID || !process.env.GOOGLE_PROJECT_ID.trim()) {
+      errors.push('GOOGLE_PROJECT_ID is missing');
+    }
+    if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_CLIENT_EMAIL.trim()) {
+      errors.push('GOOGLE_CLIENT_EMAIL is missing');
+    }
+    if (!process.env.GOOGLE_PRIVATE_KEY || !process.env.GOOGLE_PRIVATE_KEY.trim()) {
+      errors.push('GOOGLE_PRIVATE_KEY is missing');
     }
   }
 
