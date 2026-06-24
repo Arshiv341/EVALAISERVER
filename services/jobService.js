@@ -44,7 +44,7 @@ function summarizeStudentStatuses(job) {
 
 function countProcessedStudents(job) {
   return job.students.filter(student =>
-    ['completed', 'ai_done', 'error'].includes(student.status)
+    ['completed', 'ai_done', 'error', 'failed'].includes(student.status)
   ).length;
 }
 
@@ -55,7 +55,7 @@ function countSuccessfulStudents(job) {
 }
 
 function countErrorStudents(job) {
-  return job.students.filter(student => student.status === 'error').length;
+  return job.students.filter(student => ['error', 'failed'].includes(student.status)).length;
 }
 
 function calculateJobProgressPct(job) {
@@ -102,17 +102,10 @@ async function finalizeJob(jobId) {
   const job = await EvalJob.findById(jobId);
   if (!job) throw new Error(`Job ${jobId} not found`);
 
-  await EvalJob.updateOne(
-    { _id: jobId },
-    { $set: { 'students.$[elem].status': 'completed' } },
-    { arrayFilters: [{ 'elem.status': 'ai_done' }] }
-  );
-
-  const updatedJob = await EvalJob.findById(jobId);
   let excelPath = '';
 
   try {
-    excelPath = await generateExcel(updatedJob, RESULTS_DIR);
+    excelPath = await generateExcel(job, RESULTS_DIR);
   } catch (err) {
     console.error('[Excel] Failed:', err.message);
     await EvalJob.findByIdAndUpdate(jobId, {
@@ -124,7 +117,7 @@ async function finalizeJob(jobId) {
     return EvalJob.findById(jobId);
   }
 
-  const processedStudents = countProcessedStudents(updatedJob);
+  const processedStudents = countProcessedStudents(job);
   await EvalJob.findByIdAndUpdate(jobId, {
     status: 'completed',
     excelPath,

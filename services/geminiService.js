@@ -42,6 +42,10 @@ function forwardGeminiGenerateContent(payload) {
       }
     );
 
+    request.setTimeout(120000, () => {
+      request.destroy(new Error('Gemini API request timeout after 120 seconds'));
+    });
+
     request.on('error', reject);
     request.write(body);
     request.end();

@@ -6,7 +6,7 @@ const studentSchema = new mongoose.Schema({
   filePath:      { type: String },                 // disk path (deleted after done)
   status: {
     type:    String,
-    enum:    ['pending', 'ocr_processing', 'ocr_done', 'ai_done', 'completed', 'error'],
+    enum:    ['pending', 'processing', 'completed', 'failed', 'ocr_processing', 'ocr_done', 'ai_done', 'error', 'retrying'],
     default: 'pending'
   },
   ocrText:       { type: String, default: '' },

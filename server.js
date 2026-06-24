@@ -21,11 +21,8 @@ const isProd = process.env.NODE_ENV === 'production';
 
 app.set('trust proxy', 1);
 
-const maskedEmailUser = process.env.EMAIL_USER
-  ? `${String(process.env.EMAIL_USER).slice(0, 2)}***`
-  : '(missing)';
-console.log('[env] EMAIL_USER:', maskedEmailUser);
-console.log('[env] EMAIL_PASS present:', Boolean(process.env.EMAIL_PASS));
+console.log('[env] Resend configured:', Boolean(process.env.RESEND_API_KEY));
+console.log('[env] Sender email:', process.env.SENDER_EMAIL || '(missing)');
 checkPdftoppm();
 validateEnv();
 app.disable('x-powered-by');

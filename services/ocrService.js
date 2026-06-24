@@ -3,8 +3,198 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const vision = require('@google-cloud/vision');
+const https = require('https');
 
 const execFileAsync = promisify(execFile);
+
+async function retryAsync(fn, retries = 2, delay = 1000, contextLabel = '') {
+  let attempt = 0;
+  while (attempt <= retries) {
+    try {
+      return await fn();
+    } catch (err) {
+      attempt++;
+      console.warn(`[RETRY][${contextLabel}] Attempt ${attempt}/${retries} failed: ${err.message}`);
+      if (attempt > retries) {
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+    }
+  }
+}
+
+function getPngDimensions(filePath) {
+  try {
+    const buffer = fs.readFileSync(filePath);
+    if (buffer.toString('ascii', 1, 4) === 'PNG') {
+      const width = buffer.readUInt32BE(16);
+      const height = buffer.readUInt32BE(20);
+      return { width, height };
+    }
+  } catch (err) {
+    console.error('[OCR] Failed to parse PNG dimensions:', err.message);
+  }
+  return { width: 0, height: 0 };
+}
+
+function callGeminiOcr(imagePath) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !String(apiKey).trim()) {
+    throw new Error('GEMINI_API_KEY is missing.');
+  }
+
+  const base64Data = fs.readFileSync(imagePath).toString('base64');
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            text: "Perform OCR on this image. Extract all text exactly as written, preserving structure and layout as much as possible."
+          },
+          {
+            inlineData: {
+              mimeType: "image/png",
+              data: base64Data
+            }
+          }
+        ]
+      }
+    ]
+  };
+
+  const body = JSON.stringify(payload);
+  const GEMINI_HOST = 'generativelanguage.googleapis.com';
+  const GEMINI_PATH = '/v1beta/models/gemini-2.5-flash:generateContent';
+
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        method: 'POST',
+        hostname: GEMINI_HOST,
+        path: GEMINI_PATH,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'X-goog-api-key': apiKey
+        }
+      },
+      response => {
+        let responseBody = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => responseBody += chunk);
+        response.on('end', () => {
+          if (response.statusCode === 200) {
+            try {
+              const resObj = JSON.parse(responseBody);
+              const text = resObj?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              resolve(text);
+            } catch (err) {
+              reject(new Error(`Failed to parse Gemini response: ${err.message}`));
+            }
+          } else {
+            reject(new Error(`Gemini API returned error status ${response.statusCode}: ${responseBody}`));
+          }
+        });
+      }
+    );
+    request.setTimeout(120000, () => {
+      request.destroy(new Error('Gemini OCR request timeout after 120 seconds'));
+    });
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+function callEnhancedGeminiOcr(imagePath) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !String(apiKey).trim()) {
+    throw new Error('GEMINI_API_KEY is missing.');
+  }
+
+  const base64Data = fs.readFileSync(imagePath).toString('base64');
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            text: "Perform high-accuracy Enhanced OCR on this handwritten answer sheet image. Transcribe all text exactly as written, paying close attention to handwritten symbols, math notations, and messy penmanship. Retain the layout and structure."
+          },
+          {
+            inlineData: {
+              mimeType: "image/png",
+              data: base64Data
+            }
+          }
+        ]
+      }
+    ]
+  };
+
+  const body = JSON.stringify(payload);
+  const GEMINI_HOST = 'generativelanguage.googleapis.com';
+  const GEMINI_PATH = '/v1beta/models/gemini-2.5-flash:generateContent';
+
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        method: 'POST',
+        hostname: GEMINI_HOST,
+        path: GEMINI_PATH,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'X-goog-api-key': apiKey
+        }
+      },
+      response => {
+        let responseBody = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => responseBody += chunk);
+        response.on('end', () => {
+          if (response.statusCode === 200) {
+            try {
+              const resObj = JSON.parse(responseBody);
+              const text = resObj?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              resolve(text);
+            } catch (err) {
+              reject(new Error(`Failed to parse Gemini response: ${err.message}`));
+            }
+          } else {
+            reject(new Error(`Gemini API returned error status ${response.statusCode}: ${responseBody}`));
+          }
+        });
+      }
+    );
+    request.setTimeout(120000, () => {
+      request.destroy(new Error('Enhanced Gemini OCR request timeout after 120 seconds'));
+    });
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+function saveDebugFiles(text, imagePath, label) {
+  try {
+    const debugDir = path.join(__dirname, '../temp');
+    ensureDir(debugDir);
+    
+    // Save temp/ocr_output.txt
+    const txtPath = path.join(debugDir, 'ocr_output.txt');
+    fs.writeFileSync(txtPath, text, 'utf8');
+    console.log(`[DEBUG] Saved intermediate text file to: ${txtPath}`);
+
+    // Save temp/converted_page_1.png
+    if (imagePath && fs.existsSync(imagePath)) {
+      const pngPath = path.join(debugDir, 'converted_page_1.png');
+      fs.copyFileSync(imagePath, pngPath);
+      console.log(`[DEBUG] Saved intermediate image file to: ${pngPath}`);
+    }
+  } catch (err) {
+    console.warn(`[DEBUG] Failed to save intermediate debug files:`, err.message);
+  }
+}
 const OCR_TEMP_ROOT = path.join(__dirname, '../temp/ocr');
 const LANGUAGE_HINTS = ['en', 'hi'];
 
@@ -234,7 +424,7 @@ function estimateConfidence(response) {
 }
 
 function extractPageNumber(fileName, fallbackIndex) {
-  const match = String(fileName || '').match(/-(\d+)\.(?:jpe?g)$/i);
+  const match = String(fileName || '').match(/-(\d+)\.(?:jpe?g|png)$/i);
   if (match && match[1]) {
     return Number(match[1]);
   }
@@ -264,31 +454,34 @@ async function convertPdfToImages(filePath, label) {
   const outputPrefix = path.join(tempDir, 'page');
   const pdftoppm = resolvePdftoppmBinary();
 
-  console.log(`[OCR][${label}] Converting PDF pages to JPG images...`, {
+  console.log(`[OCR][${label}] Converting PDF pages to PNG images...`, {
     source: path.basename(filePath),
     tempDir,
     binary: pdftoppm
   });
 
-  try {
-    const { stdout, stderr } = await execFileAsync(
+  const convertFn = async () => {
+    return await execFileAsync(
       pdftoppm,
-      ['-jpeg', '-r', '300', filePath, outputPrefix],
+      ['-png', '-r', '150', filePath, outputPrefix],
       {
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 120000, // 120s timeout
         windowsHide: true
       }
     );
+  };
 
+  try {
+    const { stdout, stderr } = await retryAsync(convertFn, 2, 1000, `${label} PDF-to-Image Conversion`);
     if (stdout && stdout.trim()) {
       console.log(`[OCR][${label}] pdftoppm stdout:`, stdout.trim());
     }
-
     if (stderr && stderr.trim()) {
       console.log(`[OCR][${label}] pdftoppm stderr:`, stderr.trim());
     }
   } catch (err) {
-    console.error(`[OCR][${label}] PDF to image conversion failed:`, {
+    console.error(`[OCR][${label}] PDF to image conversion failed after retries:`, {
       message: err.message,
       code: err.code,
       stdout: err.stdout,
@@ -300,7 +493,7 @@ async function convertPdfToImages(filePath, label) {
   }
 
   const imageFiles = fs.readdirSync(tempDir)
-    .filter(fileName => /\.jpe?g$/i.test(fileName))
+    .filter(fileName => /\.png$/i.test(fileName))
     .map((fileName, index) => ({
       pageNumber: extractPageNumber(fileName, index),
       filePath: path.join(tempDir, fileName),
@@ -310,60 +503,118 @@ async function convertPdfToImages(filePath, label) {
 
   if (imageFiles.length === 0) {
     cleanupTempDir(tempDir);
-    throw new Error(`No JPG page images were generated for ${path.basename(filePath)}.`);
+    throw new Error(`No PNG page images were generated for ${path.basename(filePath)}.`);
   }
 
   return { tempDir, imageFiles };
 }
 
-async function ocrImagePage(client, imagePath, pageNumber, totalPages, label) {
-  try {
-    const [response] = await client.documentTextDetection({
-      image: {
-        source: {
-          filename: imagePath
-        }
-      },
-      imageContext: {
-        languageHints: LANGUAGE_HINTS
+async function callGoogleVisionOcr(client, imagePath) {
+  const [response] = await client.documentTextDetection({
+    image: {
+      source: {
+        filename: imagePath
       }
-    });
-
-    const text = extractVisionText(response);
-    const confidence = estimateConfidence(response);
-
-    if (text) {
-      console.log(`[OCR][${label}] Page ${pageNumber}/${totalPages} success:`, {
-        chars: text.length,
-        confidence
-      });
-    } else {
-      console.warn(`[OCR][${label}] Page ${pageNumber}/${totalPages} returned no readable text.`);
+    },
+    imageContext: {
+      languageHints: LANGUAGE_HINTS
     }
+  });
 
-    return {
-      pageNumber,
-      text,
-      confidence,
-      success: Boolean(text),
-      error: ''
-    };
+  const text = extractVisionText(response);
+  const confidence = estimateConfidence(response);
+  return { text, confidence };
+}
+
+async function ocrImagePage(client, imagePath, pageNumber, totalPages, label) {
+  let text = '';
+  let confidence = 0;
+  let engineUsed = 'Google Vision';
+  let success = false;
+  let lastErrorMsg = '';
+
+  // 1. Google Vision OCR
+  try {
+    console.log(`[OCR][${label}] Running Google Vision OCR on page ${pageNumber}/${totalPages}...`);
+    const res = await retryAsync(
+      () => callGoogleVisionOcr(client, imagePath),
+      2,
+      1000,
+      `${label} Page ${pageNumber} Google Vision`
+    );
+    text = res.text;
+    confidence = res.confidence;
+    if (text) {
+      success = true;
+    }
   } catch (err) {
-    console.error(`[OCR][${label}] Page ${pageNumber}/${totalPages} failed:`, {
-      message: err.message,
-      code: err.code,
-      responseCode: err.responseCode,
-      stack: err.stack
-    });
-
-    return {
-      pageNumber,
-      text: '',
-      confidence: 0,
-      success: false,
-      error: err.message
-    };
+    lastErrorMsg = err.message;
+    console.warn(`[OCR][${label}] Google Vision OCR failed on page ${pageNumber} after retries:`, err.message);
   }
+
+  // 2. Gemini OCR
+  if (!success) {
+    engineUsed = 'Gemini OCR';
+    try {
+      console.log(`[OCR][${label}] Running Gemini OCR on page ${pageNumber}/${totalPages}...`);
+      text = await retryAsync(
+        () => callGeminiOcr(imagePath),
+        2,
+        1000,
+        `${label} Page ${pageNumber} Gemini OCR`
+      );
+      confidence = 0.95;
+      if (text) {
+        success = true;
+      }
+    } catch (err) {
+      lastErrorMsg = err.message;
+      console.warn(`[OCR][${label}] Gemini OCR failed on page ${pageNumber} after retries:`, err.message);
+    }
+  }
+
+  // 3. Enhanced OCR
+  if (!success) {
+    engineUsed = 'Enhanced OCR';
+    try {
+      console.log(`[OCR][${label}] Running Enhanced OCR on page ${pageNumber}/${totalPages}...`);
+      text = await retryAsync(
+        () => callEnhancedGeminiOcr(imagePath),
+        2,
+        1000,
+        `${label} Page ${pageNumber} Enhanced OCR`
+      );
+      confidence = 0.95;
+      if (text) {
+        success = true;
+      }
+    } catch (err) {
+      lastErrorMsg = err.message;
+      console.error(`[OCR][${label}] Enhanced OCR failed on page ${pageNumber} after retries:`, err.message);
+      return {
+        pageNumber,
+        text: '',
+        confidence: 0,
+        success: false,
+        error: `All OCR methods in the chain failed on page ${pageNumber}. Last error: ${lastErrorMsg}`,
+        engineUsed: 'none'
+      };
+    }
+  }
+
+  console.log(`[OCR][${label}] Page ${pageNumber}/${totalPages} success using ${engineUsed}:`, {
+    chars: text.length,
+    confidence
+  });
+
+  return {
+    pageNumber,
+    text,
+    confidence,
+    success: true,
+    error: '',
+    engineUsed
+  };
 }
 
 async function extractDocumentOcr(filePath, { label = 'document' } = {}) {
@@ -371,60 +622,184 @@ async function extractDocumentOcr(filePath, { label = 'document' } = {}) {
     throw new Error(`PDF file not found: ${filePath || '(missing path)'}`);
   }
 
-  const client = getClient();
-  const { tempDir, imageFiles } = await convertPdfToImages(filePath, label);
+  const stats = fs.statSync(filePath);
+  const fileSize = stats.size;
+  console.log(`[OCR][${label}] Processing PDF file:`, {
+    name: path.basename(filePath),
+    sizeBytes: fileSize
+  });
+
+  if (fileSize === 0) {
+    throw new Error('Empty PDF');
+  }
+
+  // 1. Try direct PDF text extraction first using pdf-parse
+  let directText = '';
+  let pdfParsePageCount = 0;
+  let parsedSuccessfully = false;
 
   try {
-    const pageResults = await Promise.all(
-      imageFiles.map(page => ocrImagePage(client, page.filePath, page.pageNumber, imageFiles.length, label))
+    const pdfParse = require('pdf-parse');
+    const dataBuffer = fs.readFileSync(filePath);
+    
+    // Custom pagerender to track page count and separate text by page
+    const pageTexts = [];
+    const options = {
+      pagerender: function(pageData) {
+        return pageData.getTextContent().then(function(textContent) {
+          let lastY, text = '';
+          for (let item of textContent.items) {
+            if (lastY == item.transform[5] || !lastY){
+              text += item.str;
+            } else {
+              text += '\n' + item.str;
+            }
+            lastY = item.transform[5];
+          }
+          pageTexts.push(text);
+          return text;
+        });
+      }
+    };
+
+    const parsedData = await pdfParse(dataBuffer, options);
+    pdfParsePageCount = parsedData.numpages;
+    directText = String(parsedData.text || '').trim();
+    parsedSuccessfully = true;
+
+    console.log(`[OCR][${label}] pdf-parse results:`, {
+      pages: pdfParsePageCount,
+      textLength: directText.length
+    });
+  } catch (err) {
+    console.error(`[OCR][${label}] pdf-parse failed:`, err.message);
+    const errMsg = String(err.message || '').toLowerCase();
+    if (errMsg.includes('password') || errMsg.includes('decrypt') || errMsg.includes('encrypted')) {
+      throw new Error('Password protected PDF');
+    } else {
+      throw new Error('Corrupted PDF');
+    }
+  }
+
+  if (pdfParsePageCount === 0) {
+    throw new Error('Empty PDF');
+  }
+
+  // If direct text extraction length > 200 characters, use it directly and skip OCR entirely
+  if (parsedSuccessfully && directText.replace(/\s+/g, '').length > 200) {
+    console.log(`[OCR][${label}] Direct text extraction has > 200 readable chars. Skipping OCR entirely.`);
+    
+    // Save intermediate debug files
+    saveDebugFiles(directText, null, label);
+
+    return {
+      text: directText,
+      rawText: directText,
+      pageCount: pdfParsePageCount,
+      confidence: 1.0,
+      pages: [{ pageNumber: 1, text: directText, confidence: 1.0, success: true, engineUsed: 'pdf-parse' }]
+    };
+  }
+
+  // 2. If direct text is empty/too short, fall back to PDF -> Image conversion + OCR
+  console.log(`[OCR][${label}] Direct text too short or empty. Falling back to PDF -> Image conversion + OCR...`);
+
+  const client = getClient();
+  const { tempDir, imageFiles } = await convertPdfToImages(filePath, label);
+  const imageCount = imageFiles.length;
+
+  let pageResults = [];
+  let rawText = '';
+  let finalText = '';
+  let confidence = 0;
+  let ocrSucceeded = false;
+
+  try {
+    // Get image dimensions for the first page for logging
+    if (imageFiles.length > 0) {
+      const dimensions = getPngDimensions(imageFiles[0].filePath);
+      console.log(`[OCR][${label}] Converted image dimensions (Page 1):`, dimensions);
+    }
+
+    pageResults = await Promise.all(
+      imageFiles.map(page => ocrImagePage(client, page.filePath, page.pageNumber, imageCount, label))
     );
 
     pageResults.sort((a, b) => a.pageNumber - b.pageNumber);
 
-    const rawText = pageResults
+    rawText = pageResults
       .map(page => page.text)
       .filter(Boolean)
       .join('\n\n')
       .trim();
 
     const cleanedText = cleanDocumentText(pageResults.map(page => page.text));
-    const finalText = cleanedText || rawText;
+    finalText = cleanedText || rawText;
 
     const confidenceValues = pageResults
       .map(page => page.confidence)
       .filter(value => Number.isFinite(value) && value > 0);
-    const confidence = confidenceValues.length > 0
+    confidence = confidenceValues.length > 0
       ? Number((confidenceValues.reduce((acc, value) => acc + value, 0) / confidenceValues.length).toFixed(3))
       : 0;
 
     const successfulPages = pageResults.filter(page => page.success && page.text).length;
     const failedPages = pageResults.length - successfulPages;
 
+    const enginesUsed = [...new Set(pageResults.map(p => p.engineUsed))].filter(Boolean).join(', ');
+
     console.log(`[OCR][${label}] OCR complete:`, {
       pages: pageResults.length,
       successfulPages,
       failedPages,
       chars: finalText.length,
-      confidence
+      confidence,
+      enginesUsed,
+      imageCount
     });
 
-    if (!String(finalText || '').trim()) {
-      throw new Error(`OCR produced no readable text for ${label}.`);
+    if (String(finalText || '').trim()) {
+      ocrSucceeded = true;
     }
+  } catch (err) {
+    console.error(`[OCR][${label}] OCR conversion/processing failed:`, err.message);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
 
-    if (String(finalText).replace(/\s+/g, '').length < 20) {
-      throw new Error(`OCR output is too short to evaluate reliably for ${label}.`);
-    }
+  // Determine final text output
+  let resultText = '';
+  if (ocrSucceeded) {
+    resultText = String(finalText || '').trim();
+    // Save intermediate debug files
+    saveDebugFiles(resultText, imageFiles[0]?.filePath, label);
 
     return {
-      text: finalText,
+      text: resultText,
       rawText,
       pageCount: pageResults.length,
       confidence,
       pages: pageResults
     };
-  } finally {
-    cleanupTempDir(tempDir);
+  } else {
+    // OCR failed or returned empty text. Fall back to pdf-parse text if available
+    if (parsedSuccessfully && directText && String(directText).trim()) {
+      console.log(`[OCR][${label}] OCR returned no text. Falling back to direct PDF text (${directText.length} chars).`);
+      resultText = String(directText).trim();
+      // Save intermediate debug files
+      saveDebugFiles(resultText, null, label);
+
+      return {
+        text: resultText,
+        rawText: resultText,
+        pageCount: pdfParsePageCount,
+        confidence: 1.0,
+        pages: [{ pageNumber: 1, text: resultText, confidence: 1.0, success: true, engineUsed: 'pdf-parse' }]
+      };
+    }
+
+    // No text extracted from either method
+    throw new Error(`OCR produced no readable text for ${label}.`);
   }
 }
 
