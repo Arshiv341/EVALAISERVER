@@ -86,6 +86,8 @@ async function processJob(jobId) {
 
     await Promise.all(batch.map(async student => {
       const studentId = student._id;
+      const ocrStartTime = Date.now();
+      console.log(`[STAGE] OCR START: Processing student filename: ${student.originalName}`);
       try {
         await EvalJob.updateOne(
           { _id: jobId, 'students._id': studentId },
@@ -120,11 +122,16 @@ async function processJob(jobId) {
           }
         );
 
+        const ocrDuration = Date.now() - ocrStartTime;
+        console.log(`[STAGE] OCR SUCCESS: Completed ${student.originalName} in ${ocrDuration}ms. Detected Student: ${result.studentName}, Roll: ${result.rollNumber}`);
+
         console.log(`[OCR] Done: ${student.originalName} -> ${result.studentName}`, {
           pages: result.pageCount,
           confidence: Number(result.confidence || 0)
         });
       } catch (err) {
+        const ocrDuration = Date.now() - ocrStartTime;
+        console.error(`[STAGE] OCR FAIL: Failed for ${student.originalName} in ${ocrDuration}ms. Error: ${err.message}`);
         console.error(`[OCR] Error on ${student.originalName}:`, {
           message: err.message,
           code: err.code,

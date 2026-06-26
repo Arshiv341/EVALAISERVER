@@ -546,13 +546,16 @@ exports.getStatus = async (req, res) => {
 };
 
 exports.saveResult = async (req, res) => {
+  console.log("[TRACE] Controller entered");
   try {
     const { jobId, studentId, result } = req.body || {};
     if (!jobId || !studentId || !result) {
       return res.status(400).json({ error: 'jobId, studentId, and result are required.' });
     }
 
+    console.log("[TRACE] Before finding EvalJob");
     const job = await EvalJob.findOne({ _id: jobId, facultyId: req.faculty.id });
+    console.log("[TRACE] After finding EvalJob. Found?", !!job);
     if (!job) {
       return res.status(404).json({ error: 'Job not found.' });
     }
@@ -563,7 +566,9 @@ exports.saveResult = async (req, res) => {
     }
 
     if (student.status === 'ai_done' || student.status === 'completed') {
+      console.log("[TRACE] Student already done/completed, running maybeFinalizeJob");
       await maybeFinalizeJob(jobId);
+      console.log("[TRACE] After maybeFinalizeJob for already-done student");
       return res.json({ success: true, message: 'Result already saved.' });
     }
 
@@ -575,7 +580,9 @@ exports.saveResult = async (req, res) => {
 
     let normalized;
     try {
+      console.log("[TRACE] Before validateAiResult");
       normalized = validateAiResult(result);
+      console.log("[TRACE] After validateAiResult");
     } catch (validationError) {
       return res.status(422).json({ error: validationError.message });
     }
@@ -587,6 +594,7 @@ exports.saveResult = async (req, res) => {
       ? normalizeText(student.rollNumber)
       : normalized.rollNumber;
 
+    console.log("[TRACE] Before updating Mongo");
     await EvalJob.updateOne(
       { _id: jobId, 'students._id': studentId },
       {
@@ -601,22 +609,31 @@ exports.saveResult = async (req, res) => {
         }
       }
     );
+    console.log("[TRACE] Mongo updated");
 
+    console.log("[TRACE] maybeFinalizeJob entered");
     const maybeFinalJob = await maybeFinalizeJob(jobId);
+    console.log("[TRACE] maybeFinalizeJob completed. Job finalized?", !!maybeFinalJob);
     if (!maybeFinalJob) {
+      console.log("[TRACE] Before finding refreshed job");
       const refreshedJob = await EvalJob.findById(jobId).select('students');
+      console.log("[TRACE] After finding refreshed job");
       const counts = buildJobCounts(refreshedJob);
+      console.log("[TRACE] Before syncing job progress");
       await syncJobProgress(jobId, {
         status: 'processing',
         currentlyProcessing: counts.ocrDoneStudents > 0
           ? 'Waiting for browser AI'
           : ''
       });
+      console.log("[TRACE] After syncing job progress");
     }
 
     res.json({ success: true });
   } catch (err) {
     console.error('saveResult error:', err);
+    console.error('error.message:', err.message);
+    console.error('error.stack:', err.stack);
     res.status(500).json({ error: 'Save failed.' });
   }
 };

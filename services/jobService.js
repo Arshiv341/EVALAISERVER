@@ -99,15 +99,20 @@ async function cleanupJobFiles(job) {
 }
 
 async function finalizeJob(jobId) {
+  console.log("[TRACE] finalizeJob entered");
   const job = await EvalJob.findById(jobId);
   if (!job) throw new Error(`Job ${jobId} not found`);
 
   let excelPath = '';
 
   try {
+    console.log("[TRACE] Before generating Excel");
     excelPath = await generateExcel(job, RESULTS_DIR);
+    console.log("[TRACE] Excel generated");
   } catch (err) {
     console.error('[Excel] Failed:', err.message);
+    console.error('error.stack:', err.stack);
+    console.log("[TRACE] Before updating job status to error (Excel failed)");
     await EvalJob.findByIdAndUpdate(jobId, {
       status: 'error',
       errorMessage: `Excel generation failed: ${err.message}`,
@@ -118,6 +123,7 @@ async function finalizeJob(jobId) {
   }
 
   const processedStudents = countProcessedStudents(job);
+  console.log("[TRACE] Before updating job status to completed");
   await EvalJob.findByIdAndUpdate(jobId, {
     status: 'completed',
     excelPath,
@@ -126,17 +132,20 @@ async function finalizeJob(jobId) {
     completedAt: new Date()
   });
 
+  console.log("[TRACE] Before loading finalized job details");
   const finalJob = await EvalJob.findById(jobId);
 
   // Trigger background class performance analytics updates safely without blocking
   try {
     const { enqueueAnalytics } = require('./analyticsService');
+    console.log("[TRACE] Enqueueing analytics update");
     enqueueAnalytics(finalJob.facultyId);
   } catch (analyticsError) {
     console.error('[Analytics Queue Trigger Error] Failed to enqueue analytics update:', analyticsError);
   }
 
   try {
+    console.log("[TRACE] Cleaning up job files");
     await cleanupJobFiles(finalJob);
   } catch (err) {
     console.error('[Cleanup] Error:', err.message);
@@ -146,20 +155,24 @@ async function finalizeJob(jobId) {
 }
 
 async function maybeFinalizeJob(jobId) {
+  console.log("[TRACE] maybeFinalizeJob entered");
   const job = await EvalJob.findById(jobId);
   if (!job) return null;
 
   if (job.status === 'completed') {
+    console.log("[TRACE] Job already completed");
     return job;
   }
 
   const allDone = job.students.every(student =>
     ['ai_done', 'completed', 'error'].includes(student.status)
   );
+  console.log("[TRACE] Checked allDone:", allDone);
   if (!allDone) {
     return null;
   }
 
+  console.log("[TRACE] All students evaluated. Finalizing job...");
   return finalizeJob(jobId);
 }
 
